@@ -1,0 +1,103 @@
+# Template for the ingestion + index refresh job of the doc-qa-agent use-case skill (modules 01-02).
+# Don't fill it by hand: `render.py ingest` writes <name>-ingest/databricks.yml from doc-qa.json,
+# replacing each whole-value <key> with a quoted value, and copies the job's scripts to src/.
+bundle:
+  name: <bundle_name>
+
+variables:
+  catalog:
+    description: Catalog for the tables and index
+    default: <catalog>
+  schema:
+    description: Schema for the tables and index
+    default: <schema>
+  prefix:
+    description: Table prefix (<prefix>_parsed, <prefix>_chunks, <prefix>_chunks_index)
+    default: <prefix>
+  volume_path:
+    description: Source volume path, no trailing slash
+    default: <volume_path>
+  metadata_schema:
+    description: JSON array or ai_extract-style object for ai_prep_search; empty disables metadata
+    default: <metadata_schema>
+  metadata_columns:
+    description: Comma-separated keys of metadata_schema (index columns_to_sync); render.py derives it
+    default: <metadata_columns>
+  description_element_types:
+    description: ai_parse_document descriptionElementTypes ('*', 'figure', or '' to save cost)
+    default: <description_element_types>
+  page_images_path:
+    description: Volume directory for rendered page images; empty disables
+    default: <page_images_path>
+  vs_endpoint:
+    description: AI Search endpoint name
+    default: <vs_endpoint>
+  embedding_model:
+    description: Embedding serving endpoint for managed embeddings
+    default: <embedding_model>
+
+resources:
+  jobs:
+    doc_qa_ingest:
+      name: doc-qa ingest ${var.prefix}
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+      trigger:
+        pause_status: UNPAUSED
+        file_arrival:
+          url: ${var.volume_path}/
+          min_time_between_triggers_seconds: 300
+          wait_after_last_change_seconds: 120
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"  # ai_parse_document needs VARIANT (env >= 3); use the latest
+            dependencies:
+              - databricks-sdk>=0.124.0
+      tasks:
+        - task_key: parse_and_chunk
+          environment_key: default
+          spark_python_task:
+            python_file: src/ingest.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${var.schema}
+              - --prefix
+              - ${var.prefix}
+              - --volume-path
+              - ${var.volume_path}
+              - --metadata-schema
+              - ${var.metadata_schema}
+              - --description-element-types
+              - ${var.description_element_types}
+              - --page-images-path
+              - ${var.page_images_path}
+              - --sql-dir
+              - ${workspace.file_path}/src
+        - task_key: sync_index
+          depends_on:
+            - task_key: parse_and_chunk
+          environment_key: default
+          spark_python_task:
+            python_file: src/sync_index.py
+            parameters:
+              - --chunks-table
+              - ${var.catalog}.${var.schema}.${var.prefix}_chunks
+              - --index-name
+              - ${var.catalog}.${var.schema}.${var.prefix}_chunks_index
+              - --endpoint
+              - ${var.vs_endpoint}
+              - --embedding-model
+              - ${var.embedding_model}
+              - --metadata-columns
+              - ${var.metadata_columns}
+
+targets:
+  # No `mode: development`: development mode forces triggers to PAUSED, and this job exists to react to new files.
+  default:
+    default: true
+    workspace:
+      profile: <profile>
