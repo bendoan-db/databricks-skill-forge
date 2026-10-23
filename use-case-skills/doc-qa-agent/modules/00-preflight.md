@@ -45,7 +45,7 @@ databricks experimental aitools tools query --warehouse "$WAREHOUSE_ID" --profil
   GROUP BY 1 ORDER BY files DESC"
 ```
 
-Record the warehouse as `warehouse_id`. Supported types: pdf, jpg/jpeg, png, tif/tiff, doc/docx, ppt/pptx. Other types are skipped. Files over 100 MB or 500 pages are recorded as parse errors and are not retried. If there are no supported files, stop.
+Record the warehouse as `warehouse_id`. Supported types: pdf, jpg/jpeg, png, tif/tiff, doc/docx, ppt/pptx. Other types are skipped. Files over 100 MB are recorded as skipped and are not retried. PDFs over 500 pages are parsed in 500-page slices; other formats over 500 pages fail to parse. If the files are single pages with one folder per document (`page_1.pdf`, `page_2.pdf`, ...), plan to set `split_pages` (module 01). If there are no supported files, stop.
 
 ## 4. Models
 
@@ -88,6 +88,7 @@ Check with `databricks grants get-effective schema <catalog>.<schema> --profile 
 Summarize what each step creates, then wait for an explicit yes:
 
 - **Parse:** N supported files, X MB. `ai_parse_document` and `ai_prep_search` are billed per page/token; only new or changed files are reprocessed later.
+- **Chart insights (only if on):** one `ai_classify` call per described figure and one vision-model call per chart, once per parse.
 - **AI Search:** a STANDARD endpoint is billed while it exists, even when idle. The index is billed by size.
 - **App:** `agent-bricks-<name>` compute while running, plus a Databricks-managed Lakebase Runtime Store and Session Store.
 - **Job:** a serverless job, triggered on file arrival.

@@ -1,0 +1,117 @@
+# End-to-end certification scenarios for structured-doc-extraction.
+# forge_ucs_validate runs these on every PR (U5), and forge_ucs_drift runs them on each base release (U9).
+# Each run executes the modules in a sandbox workspace twice: with this skill (candidate) and with
+# base skills only (base-only). The candidate must pass every check and must not score below base-only.
+# Sample documents come from https://github.com/databricks-solutions/advance-document-processing (ADP below).
+
+defaults:
+  harness:
+    auto_approve_cost_gates: sandbox_only    # never auto-approve outside the certification workspace
+    teardown: [job, tables, review_view, page_images_volume]
+    upstream_versions: [v0.2.27, latest]     # databricks-agent-skills installed next to the skill: ucs.yaml upstream_min, and the newest tag
+  thresholds:                                # same floors as scripts/evaluate.py THRESHOLDS
+    classification_accuracy: 0.95
+    field_accuracy: 0.9
+    array_soft_f1: 0.8
+  localization_hit_rate: 0.8                 # same as scripts/localize.py MIN_HIT_RATE
+  checks:                                    # apply to every scenario, in addition to its own checks
+    - no_information_extraction              # the agent never creates or suggests Agent Bricks Information Extraction (being deprecated)
+    - no_sensitive_values_in_report          # the final report shows counts and field names, not SSNs or account numbers
+
+# Routing evals: with every databricks-agent-skills skill and doc-qa-agent installed next to this one, each prompt
+# runs in a fresh session, and the harness records which skill the agent loads first.
+routing:
+  should_trigger:
+    - "Extract the invoice number, vendor, and total from the PDFs in /Volumes/main/ap/invoices into a table"
+    - "Our loan files are single PDFs with many documents inside. Split them and pull the borrower's income and bank balances"
+    - "Build a review queue for low-confidence fields extracted from the claim forms in our volume"
+    - "How accurate is our pay stub extraction? We have labeled examples"
+  should_not_trigger:
+    - prompt: "Build a chatbot that answers questions about the PDFs in /Volumes/main/legal/contracts, with citations"
+      expected: doc-qa-agent
+    - prompt: "Write a SQL query that runs ai_parse_document on one file"
+      expected: databricks-ai-functions
+    - prompt: "Classify the support tickets in main.support.tickets by urgency"
+      expected: databricks-ai-functions
+    - prompt: "Create a vector search index on main.sales.products for semantic product search"
+      expected: databricks-vector-search
+
+scenarios:
+  - id: paystubs-single-type-localized
+    description: One document type with nested and repeating fields, scored against labels, with word-level boxes
+    source:
+      repo: https://github.com/databricks-solutions/advance-document-processing
+      documents: ai-extract-word-level-citation/sample_data          # 4 synthetic paystubs
+      ground_truth: evaluation-harness/sample_data/paystub_ground_truth_ai_extract.jsonl   # convert: doc_id → file_name, ground_truth → fields
+    inputs:
+      layout: single_type
+      localize: true
+      document_types: >-
+        {"paystub": {"schema": "<ADP ai-extract-word-level-citation/bundle/src/02_extract_flat.py PAYSTUB_SCHEMA>"}}
+    checks:
+      - parsed_documents == 4
+      - extract_errors == 0
+      - field_accuracy >= thresholds.field_accuracy
+      - localization_hit_rate >= localization_hit_rate
+
+  - id: mortgage-packets
+    description: Multi-document packets, page classification, multi-page grouping, and noise pages
+    source:
+      repo: https://github.com/databricks-solutions/advance-document-processing
+      documents: document-page-classify-extraction/sample_data       # 4 loan files x 12 pages
+    inputs:
+      layout: packet
+      document_types: >-
+        "<ADP document-page-classify-extraction/bundle/src/03_classify_pages.py LABELS_JSON minus noise, with
+        04_extract_fields.py EXTRACT_SCHEMAS; bank_statement and tax_return pages: multi>"
+    checks:
+      - classified_pages == 48
+      - other_pages == 8                     # fax covers and separators (ADP validated run: 8 noise pages)
+      - every_file_has_segment(loan_application)
+      - extract_errors == 0
+
+  - id: insurance-one-per-file
+    description: One document per file across five types; classification scored against labels
+    source:
+      repo: https://github.com/databricks-solutions/advance-document-processing
+      documents: ai-search-knowledge-base-creation/sample_data       # 15 insurance PDFs, 3 per type
+      ground_truth: ai-search-knowledge-base-creation/sample_data/ground_truth_doc_types.csv   # convert: one line per file with doc_type, empty fields
+    inputs:
+      layout: one_per_file
+    checks:
+      - classification_accuracy >= thresholds.classification_accuracy
+      - unclassified_segments == 0
+
+  - id: long-pdf
+    description: A PDF over the 500-page limit, parsed in slices and stitched (shared parse stage)
+    source:
+      generate: one 1,203-page PDF (pypdf; repeat a 3-page sample with printed page numbers)
+    inputs:
+      layout: single_type
+    checks:
+      - parsed.parse_mode == 'page_range'
+      - parsed.page_count == 1203 and pages_in_variant == 1203
+      - parsed.parse_error IS NULL
+      - page_ids == [0 .. 1202] and element_ids_unique
+
+  - id: split-pages
+    description: Documents delivered as one file per page, one folder per document (shared parse stage)
+    source:
+      generate: >-
+        two folders of single-page PDFs split from 5-page samples with printed page numbers: one named
+        page_1.pdf ... page_5.pdf, one with random names (order must come from the printed numbers)
+    inputs:
+      layout: single_type
+      split_pages: true
+    checks:
+      - parsed_documents == 2 and parsed.parse_mode == 'assembled'
+      - assembled_printed_page_order == [1, 2, 3, 4, 5]   # both folders
+
+  - id: incremental-refresh
+    description: The file-arrival job picks up an added file and drops a deleted one without reprocessing others
+    depends_on: insurance-one-per-file
+    steps: [add 1 new PDF, delete 1 existing file, wait for the job run]
+    checks:
+      - changed_files == 1                   # parse.py summary for the triggered run
+      - documents_processed == 1             # extract.py summary: only the new file is classified and extracted
+      - deleted_file_rows == 0               # across segments, extracted, fields, and typed tables

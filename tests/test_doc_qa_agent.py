@@ -1,24 +1,17 @@
-"""Checks for use-case-skills/doc-qa-agent that need no workspace.
-
-    uv run --no-project --with pytest --with pyyaml pytest -q -p no:cacheprovider databricks-skill-forge/tests
-"""
+"""Checks for use-case-skills/doc-qa-agent that need no workspace (cross-skill checks are in test_skills.py)."""
 
 import argparse
 import ast
 import json
-import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from conftest import SKILLS_DIR, load_script, run_script
 
-sys.dont_write_bytecode = True  # importing ingest must not leave __pycache__ in the published skill folder
-SKILL = Path(__file__).resolve().parents[1] / "use-case-skills" / "doc-qa-agent"
-SCRIPTS = SKILL / "scripts"
-sys.path.insert(0, str(SCRIPTS))
-import ingest  # noqa: E402
+SKILL = "doc-qa-agent"
+SCRIPTS = SKILLS_DIR / SKILL / "scripts"
+prep_chunks = load_script(SKILL, "prep_chunks")
 
 SCHEMA = {  # module 02's example, apostrophe included
     "company": {"type": "string", "description": "Issuer's common name, e.g. 'JOHNSON & JOHNSON' -> 'JOHNSONJOHNSON'"},
@@ -33,6 +26,7 @@ STATE = {
     "prefix": "filings",
     "name": "filings",
     "metadata_schema": SCHEMA,
+    "chat_model": "system.ai.claude-sonnet-5-5",
     "vs_endpoint": "filings-vs",
     "embedding_model": "databricks-qwen3-embedding-0-6b",
     "filter_values": {"company": ["APPLE", "NETFLIX"], "fiscal_year": None},
@@ -40,13 +34,8 @@ STATE = {
 }
 
 
-def run(script: str, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        [sys.executable, "-B", str(SCRIPTS / script), *args], capture_output=True, text=True, check=False
-    )
-    if check:
-        assert result.returncode == 0, result.stderr
-    return result
+def render(*args: str, check: bool = True):
+    return run_script(SKILL, "render.py", *args, check=check)
 
 
 @pytest.fixture
@@ -58,45 +47,86 @@ def state_file(tmp_path: Path) -> Path:
 
 def test_every_sql_placeholder_has_a_value():
     args = argparse.Namespace(
-        catalog="main", schema="docs", prefix="filings", description_element_types="*",
-        page_images_path="/Volumes/main/docs/images", metadata_schema=json.dumps(SCHEMA),
+        catalog="main", schema="docs", prefix="filings", metadata_schema=json.dumps(SCHEMA),
+        chart_model="", chart_prompt="It's a chart",
     )
-    params = ingest.build_params(args, ingest.metadata_columns(args.metadata_schema))
-    for name in ("parse_documents.sql", "prep_chunks.sql"):
-        for sql in ingest.load_sections(SCRIPTS / name).values():
-            ingest.render(sql, params)  # KeyError on a placeholder build_params doesn't fill
+    params = prep_chunks.build_params(args, prep_chunks.metadata_columns(args.metadata_schema))
+    for sql in prep_chunks.load_sections(SCRIPTS / "prep_chunks.sql").values():
+        prep_chunks.render(sql, params)  # KeyError on a placeholder build_params doesn't fill
+    assert params["chart_model"] == "'system.ai.claude-sonnet-5-5'"
+    assert params["chart_prompt"] == "'It\\'s a chart'"
 
 
 def test_metadata_schema_rules():
-    assert ingest.metadata_columns('["company"]') == {"company": "STRING"}
+    assert prep_chunks.metadata_columns('["company"]') == {"company": "STRING"}
     for bad in ('{"Company": {}}', '{"chunk_id": {}}', '{"tags": {"type": "array"}}'):
         with pytest.raises(ValueError):
-            ingest.metadata_columns(bad)
+            prep_chunks.metadata_columns(bad)
+
+
+def test_crop_box_pads_clamps_and_drops_tiny_figures():
+    assert prep_chunks.crop_box([100, 120, 300, 260], (1000, 1000)) == (92, 112, 308, 268)
+    assert prep_chunks.crop_box([990, 0, 1200, 200], (1000, 1000)) is None  # 10 px wide after clamping
+    assert prep_chunks.crop_box([300, 260, 100, 120], (1000, 1000)) == (92, 112, 308, 268)  # unordered coords
+    assert prep_chunks.crop_box(None, (1000, 1000)) is None
+
+
+def test_chart_insights_append_to_figure_descriptions_only():
+    parsed = {"document": {"elements": [
+        {"id": 3, "type": "figure", "description": "Bar chart of revenue"},
+        {"id": 4, "type": "text", "content": "Revenue grew"},
+    ]}}
+    insights = [{"element_id": 3, "insight": "| Year | Revenue |"}, {"element_id": 4, "insight": "ignored"}]
+    elements = prep_chunks.add_chart_insights(parsed, insights)["document"]["elements"]
+    assert elements[0]["description"] == "Bar chart of revenue\n\nChart reading:\n| Year | Revenue |"
+    assert "description" not in elements[1]
 
 
 def test_render_ingest_round_trips_values(state_file: Path):
-    run("render.py", "ingest", "--state", str(state_file))
+    render("ingest", "--state", str(state_file))
     bundle = state_file.parent / "filings-ingest"
-    variables = yaml.safe_load((bundle / "databricks.yml").read_text())["variables"]
+    parsed = yaml.safe_load((bundle / "databricks.yml").read_text())
+    variables = parsed["variables"]
     assert json.loads(variables["metadata_schema"]["default"]) == SCHEMA
     assert variables["metadata_columns"]["default"] == "company,document_type,fiscal_year"
+    assert variables["split_pages"]["default"] == "none" and variables["chart_insights"]["default"] == "false"
+    tasks = parsed["resources"]["jobs"]["doc_qa_ingest"]["tasks"]
+    assert [t["task_key"] for t in tasks] == ["parse", "chunk", "sync_index"]
     assert sorted(p.name for p in (bundle / "src").iterdir()) == sorted(
-        ["ingest.py", "sync_index.py", "parse_documents.sql", "prep_chunks.sql"]
+        ["parse.py", "parse.sql", "prep_chunks.py", "prep_chunks.sql", "sync_index.py"]
     )
 
 
+def test_render_chart_insights_needs_page_images(state_file: Path):
+    state_file.write_text(json.dumps({**STATE, "chart_insights": True}))
+    result = render("ingest", "--state", str(state_file), check=False)
+    assert result.returncode == 1 and "page_images_path" in result.stderr
+    state_file.write_text(json.dumps({**STATE, "chart_insights": True, "page_images_path": "/Volumes/main/docs/img"}))
+    render("ingest", "--state", str(state_file))
+    variables = yaml.safe_load((state_file.parent / "filings-ingest" / "databricks.yml").read_text())["variables"]
+    assert variables["chart_insights"]["default"] == "true"
+    assert variables["chart_model"]["default"] == STATE["chat_model"]
+
+
 def test_render_protects_hand_edits(state_file: Path):
-    run("render.py", "ingest", "--state", str(state_file))
+    render("ingest", "--state", str(state_file))
     target = state_file.parent / "filings-ingest" / "databricks.yml"
     target.write_text(target.read_text().replace("triggers_seconds: 300", "triggers_seconds: 600"))
-    assert run("render.py", "ingest", "--state", str(state_file), check=False).returncode == 1
-    run("render.py", "ingest", "--state", str(state_file), "--force")
+    assert render("ingest", "--state", str(state_file), check=False).returncode == 1
+    render("ingest", "--state", str(state_file), "--force")
     assert "triggers_seconds: 600" not in target.read_text()
+
+
+def test_render_schedule_replaces_file_arrival(state_file: Path):
+    state_file.write_text(json.dumps({**STATE, "schedule_cron": "0 0 6 * * ?"}))
+    render("ingest", "--state", str(state_file))
+    job = yaml.safe_load((state_file.parent / "filings-ingest" / "databricks.yml").read_text())["resources"]["jobs"]["doc_qa_ingest"]
+    assert "trigger" not in job and job["schedule"]["quartz_cron_expression"] == "0 0 6 * * ?"
 
 
 def test_render_agent_fills_constants(state_file: Path):
     (state_file.parent / "filings" / "agent").mkdir(parents=True)
-    run("render.py", "agent", "--state", str(state_file))
+    render("agent", "--state", str(state_file))
     tree = ast.parse((state_file.parent / "filings" / "agent" / "retrieval.py").read_text())
     constants = {
         (n.targets[0] if isinstance(n, ast.Assign) else n.target).id: ast.literal_eval(n.value)
@@ -110,53 +140,5 @@ def test_render_agent_fills_constants(state_file: Path):
 def test_render_rejects_filter_on_unknown_column(state_file: Path):
     state_file.write_text(json.dumps({**STATE, "filter_values": {"ticker": ["AAPL"]}}))
     (state_file.parent / "filings" / "agent").mkdir(parents=True)
-    result = run("render.py", "agent", "--state", str(state_file), check=False)
+    result = render("agent", "--state", str(state_file), check=False)
     assert result.returncode == 1 and "ticker" in result.stderr
-
-
-def test_check_base_skills(tmp_path: Path):
-    ucs = yaml.safe_load((SKILL / "ucs.yaml").read_text())
-    for module in ucs["modules"]:
-        for dep in module.get("base_skills", []):
-            meta = "" if dep["version"] == "unversioned" else f'metadata:\n  version: "{dep["version"]}"\n'
-            (tmp_path / dep["name"]).mkdir(exist_ok=True)
-            (tmp_path / dep["name"] / "SKILL.md").write_text(f"---\nname: {dep['name']}\ndescription: x\n{meta}---\n")
-    run("check_base_skills.py", "--skills-dir", str(tmp_path))
-    (tmp_path / "databricks-core" / "SKILL.md").unlink()
-    result = run("check_base_skills.py", "--skills-dir", str(tmp_path), check=False)
-    assert result.returncode == 1 and "databricks-core" in result.stderr
-
-
-def test_manifest_matches_skill_text():
-    text = (SKILL / "SKILL.md").read_text()
-    meta = yaml.safe_load(text.split("---")[1])
-    ucs = yaml.safe_load((SKILL / "ucs.yaml").read_text())
-    assert meta["name"] == SKILL.name == ucs["name"]
-    assert meta["metadata"]["version"] == ucs["version"]
-    assert len(meta["description"]) <= 1024 and len(meta["compatibility"]) <= 500
-    for module in ucs["modules"]:
-        body = (SKILL / module["file"]).read_text()
-        assert all((SKILL / script).is_file() for script in module.get("scripts", []))
-        load_lines = [line for line in body.splitlines() if re.search(r"\*\*[Ll]oad:?\*\*", line)]
-        loaded = set(re.findall(r"`(databricks-[a-z-]+)`", "\n".join(load_lines)))
-        declared = {dep["name"] for dep in module.get("base_skills", [])}
-        assert loaded == declared, f"{module['id']}: text loads {sorted(loaded)}, ucs.yaml declares {sorted(declared)}"
-
-
-def test_thresholds_agree():
-    tree = ast.parse((SCRIPTS / "evaluate.py").read_text())
-    thresholds = next(
-        ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "THRESHOLDS"
-    )
-    scenarios = yaml.safe_load((SKILL / "evals" / "scenarios.yaml").read_text())
-    assert thresholds == scenarios["defaults"]["thresholds"]
-
-
-def test_skill_folder_limits():
-    entries = list(SKILL.rglob("*"))
-    assert len(entries) <= 50
-    assert max(len(p.relative_to(SKILL).parts) for p in entries) <= 3
-    assert not [p for p in entries if p.name in ("__pycache__", ".ruff_cache", ".pytest_cache")]
-    for path in entries:
-        if path.is_file():
-            path.read_text(encoding="utf-8")  # text files only

@@ -25,7 +25,7 @@ routing:
     - "Create a document Q&A agent on Databricks and measure how accurate it is"
   should_not_trigger:
     - prompt: "Extract the invoice number, vendor, and total from the PDFs in my volume into a table"
-      expected: databricks-ai-functions      # structured-doc-extraction once it ships
+      expected: structured-doc-extraction
     - prompt: "Create a vector search index on main.sales.products for semantic product search"
       expected: databricks-vector-search
     - prompt: "Write a SQL query that runs ai_parse_document on one file"
@@ -70,11 +70,26 @@ scenarios:
       - chunks_index.indexed_row_count == chunks.count
       - live_invoke_returns_citation
 
+  - id: chart-heavy-deck
+    description: Answers that live in chart values; chart insights on
+    source:
+      repo: https://github.com/databricks-solutions/advance-document-processing
+      documents: document-embedding-chart-analysis/sample_data       # meta-earning-presentation.pdf
+    inputs:
+      page_images: true
+      chart_insights: true
+    eval_set: synthetic                      # module 05 synthesis, plus 5 hand-written questions about values only in charts
+    checks:
+      - chart_insights.count > 0 and chart_insights.errors == 0
+      - chart_value_questions_correct >= 4/5
+      - live_invoke_returns_citation
+
   - id: incremental-refresh
     description: The file-arrival job picks up an added file and drops a deleted one without reparsing others
     depends_on: mixed-office-docs
     steps: [add 1 new PDF, delete 1 existing file, wait for the job run]
     checks:
-      - changed_files == 1                   # ingest.py summary for the triggered run
+      - changed_files == 1                   # parse.py summary for the triggered run
+      - documents_chunked == 1               # prep_chunks.py summary: no other document re-chunked
       - deleted_file_chunks == 0
       - new_file_answerable                  # a question about the new file is answered with its citation

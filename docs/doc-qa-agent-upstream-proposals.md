@@ -2,7 +2,7 @@
 
 Drafts for the base-skill gaps that `use-case-skills/doc-qa-agent` works around, in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Checked against upstream v0.2.29. Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in `ucs.yaml`.
 
-The Knowledge Assistant deprecation is left out, because there's no public notice to cite yet.
+The Knowledge Assistant deprecation is left out, because there's no public notice to cite yet. Gaps shared with `structured-doc-extraction` (`ai_classify` version 2.1, PDFs over 500 pages) are drafted in `structured-doc-extraction-upstream-proposals.md`.
 
 ---
 

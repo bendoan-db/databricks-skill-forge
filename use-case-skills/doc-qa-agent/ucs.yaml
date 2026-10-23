@@ -1,14 +1,18 @@
 # Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
 # and scripts/check_base_skills.py reads base_skills at runtime.
 name: doc-qa-agent
-version: 0.2.0
+version: 0.3.0
 owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
 dbs_release: dbs-2026.10                    # Forge base release; not published yet, so `upstream` is the working pin
 upstream: databricks/databricks-agent-skills@v0.2.29   # written and certified against this tag (2026-10-12)
 upstream_min: v0.2.27                       # oldest tag with every cited base skill and reference file
 inputs:
   required: [volume_path]
-  optional: [profile, target_schema, name, metadata_schema, chat_model, embedding_model, vs_endpoint, eval_set, page_images]
+  optional: [profile, target_schema, name, metadata_schema, chat_model, embedding_model, vs_endpoint, eval_set, page_images, chart_insights, split_pages]
+shared:                                     # identical in every skill that carries them; tests/test_shared_parse.py checks
+  - scripts/parse.py
+  - scripts/parse.sql
+  - scripts/check_base_skills.py
 
 modules:
   - id: 00-preflight
@@ -30,7 +34,7 @@ modules:
 
   - id: 01-ingest-parse
     file: modules/01-ingest-parse.md
-    scripts: [scripts/render.py, scripts/databricks.yml, scripts/ingest.py, scripts/parse_documents.sql]
+    scripts: [scripts/render.py, scripts/databricks.yml, scripts/parse.py, scripts/parse.sql]
     base_skills:
       - name: databricks-ai-functions
         version: 0.2.0
@@ -50,11 +54,11 @@ modules:
 
   - id: 02-chunk-index
     file: modules/02-chunk-index.md
-    scripts: [scripts/render.py, scripts/prep_chunks.sql, scripts/ingest.py, scripts/sync_index.py]
+    scripts: [scripts/render.py, scripts/prep_chunks.py, scripts/prep_chunks.sql, scripts/sync_index.py]
     base_skills:
       - name: databricks-ai-functions
         version: 0.2.0
-        uses: [ai_prep_search]
+        uses: [ai_prep_search, multimodal ai_query and ai_classify for chart insights]
       - name: databricks-vector-search
         version: 0.1.0
         uses: [standard endpoint, delta sync index, managed embeddings, columns_to_sync, hybrid search, dict filters]
@@ -104,7 +108,8 @@ modules:
 # Capabilities this skill needs but the pinned base release doesn't cover, or covers with stale facts.
 # The base-skill refiner reads these as routing hints (v_coverage_gaps). Docs win over base skills.
 # SKILL.md "Base-skill guidance to override" holds the runtime instructions for each entry.
-# After filing a change proposal upstream (drafts: docs/doc-qa-agent-upstream-proposals.md), add `upstream_issue: <url>`.
+# After filing a change proposal upstream (drafts: docs/doc-qa-agent-upstream-proposals.md and, for ai_classify and the
+# page limit, docs/structured-doc-extraction-upstream-proposals.md), add `upstream_issue: <url>`.
 coverage_gaps:
   - capability: Agent Bricks CLI, agent.toml, DurableAgentServer, Agent Runtime on Databricks Apps
     modules: [03-agent, 04-deploy-app]
@@ -138,6 +143,20 @@ coverage_gaps:
     evidence:
       - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_prep_search
         date_modified: 2026-09-11
+  - capability: ai_classify version 2.1 (per-label objects; used for chart insights)
+    modules: [02-chunk-index]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_classify
+        date_modified: 2026-10-22
+    stale_base_guidance: databricks-ai-functions/references/1-task-functions.md recommends v2.0
+  - capability: Parsing PDFs over 500 pages with pageRange slices
+    modules: [01-ingest-parse]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
+        date_modified: 2026-10-22
+    stale_base_guidance: databricks-ai-functions/references/1-task-functions.md says "max 500 pages per document"
   - capability: Production embedding model recommendation (databricks-qwen3-embedding-0-6b)
     modules: [00-preflight, 02-chunk-index]
     kind: stale
@@ -148,11 +167,14 @@ coverage_gaps:
 # Platform facts this skill hard-codes. The refiner re-checks them like coverage_gaps; when one changes,
 # update every file in used_in.
 facts:
-  - fact: ai_parse_document accepts files up to 100 MB and 500 pages
-    used_in: [scripts/ingest.py, modules/00-preflight.md, modules/01-ingest-parse.md]
+  - fact: ai_parse_document accepts files up to 100 MB, and one call parses at most 500 pages
+    used_in: [scripts/parse.py, modules/00-preflight.md, modules/01-ingest-parse.md]
     evidence:
       - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
-        checked: 2026-10-15
+        checked: 2026-10-23
+  - fact: ai_parse_document's pageRange option must be a literal, so each slice is its own statement
+    used_in: [scripts/parse.py, scripts/parse.sql]
+    evidence: []                             # the docs show only literals; the advance-document-processing recipe reports a column fails. Confirm in a workspace
   - fact: The Delta Sync embedding source column is capped at 32,764 bytes
     used_in: [scripts/prep_chunks.sql, modules/02-chunk-index.md]
     evidence: []                             # not found in the docs or base skills on 2026-10-15; needs a source
@@ -163,7 +185,7 @@ facts:
         file: references/bundle-structure.md
         checked: 2026-10-15
   - fact: The default chat model is Claude Sonnet 5.5, model service system.ai.claude-sonnet-5-5 (legacy endpoint databricks-claude-sonnet-5-5)
-    used_in: [SKILL.md, modules/00-preflight.md, modules/03-agent.md]
+    used_in: [SKILL.md, modules/00-preflight.md, modules/03-agent.md, scripts/prep_chunks.py]
     evidence:
       - url: https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models
         checked: 2026-10-15

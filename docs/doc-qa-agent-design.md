@@ -20,7 +20,7 @@ The skill generalizes [databricks-financebench-agent](https://github.com/bendoan
 
 **Why one agent.** The foundation repo routed every question through a supervisor, a document agent or deep-research agent, and a final-answer node: four or more LLM calls, plus a self-query call. Current tool-calling models plan sub-queries and call the tool in parallel on their own, so one `create_agent` loop costs fewer calls and less latency.
 
-## Runtime design (v0.2.0)
+## Runtime design (v0.2.0, still current)
 
 - **Base skills.** For now the base skills are upstream databricks-agent-skills, installed in the same skills directory as this skill, not a Forge base release. `scripts/check_base_skills.py` checks presence and versions against `ucs.yaml`. The floor is v0.2.27, because earlier tags lack `databricks-unity-gateway` and `databricks-serverless`. Upstream rarely bumps `metadata.version` when content changes: from v0.2.29 to v0.2.31, `databricks-ai-functions` and `databricks-apps-python` changed but kept their versions. Drift detection should compare file hashes, not versions.
 - **Load when, not load first.** Modules name the base skill and reference file at the step that needs it, and push troubleshooting-only references into the troubleshooting tables. Loading every cited skill and reference up front cost about 46K tokens across the workflow at v0.2.29.
@@ -28,3 +28,15 @@ The skill generalizes [databricks-financebench-agent](https://github.com/bendoan
 - **Hand-edit protection.** Rendered files start with a checksum header. A re-render stops if the body no longer matches, unless `--force` is passed. Settings the decision table offers, such as `schedule_cron`, live in `doc-qa.json` so they don't need hand edits.
 - **Named SQL sections.** `ingest.py` runs the `.sql` files one `-- name:` section at a time, so CI can run `EXPLAIN` on each section.
 - **Knowledge Assistant.** Being deprecated (skill owner direction, 2026-10-15). The skill must not recommend it, even though `databricks-agent-bricks` advertises it for document Q&A. SKILL.md overrides that guidance, and the `no_knowledge_assistant` scenario check enforces it.
+
+## Changes in v0.3.0
+
+Built alongside `structured-doc-extraction` from the advance-document-processing repo; see `structured-doc-extraction-design.md` for the source mapping and the assumptions not yet verified in a workspace.
+
+- **Shared parse stage.** `ingest.py` and `parse_documents.sql` became `parse.py` and `parse.sql`, identical in both skills, plus `prep_chunks.py` for chunking. The job now has three tasks: `parse`, `chunk`, `sync_index`. The parsed table gained `source_files`, `page_count`, and `parse_mode`; tables created by v0.2.0 must be dropped before the first v0.3.0 run (none were deployed).
+- **Long PDFs and split pages.** PDFs over 500 pages are parsed in `pageRange` slices instead of failing; `split_pages` assembles folders of page files.
+- **`<prefix>_progress`.** With parsing in its own task, the chunk task needs to know what it has chunked. It records `(path, parsed_at)` per document, so a document with no chunks isn't re-chunked (and re-billed) on every run.
+- **`full_refresh` job parameter.** Module 02 used to say "run once with `--full-refresh`", which a bundle run can't pass to one task. It's now `databricks bundle run doc_qa_ingest --params full_refresh=true`.
+- **Chart insights** (optional). Charts are classified from their parse descriptions, cropped from page images, read by `ai_query` with `files =>`, and appended to the figure description before `ai_prep_search`, so the readings keep their page numbers.
+- **Knowledge-base decisions.** The knowledge-base pipeline's classify-and-route stage is a `document_type` metadata filter on one index. New decision points cover an index-only scope and separate indexes per domain.
+

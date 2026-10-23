@@ -8,7 +8,7 @@
     uv run <skill>/scripts/render.py agent --state <workdir>/doc-qa.json    # <name>/agent/retrieval.py
 
 `ingest` writes <workdir>/<name>-ingest/databricks.yml and copies the job's scripts to its src/
-(those copies always track the skill). `agent` writes <workdir>/<name>/agent/retrieval.py and needs
+(those copies always track the skill: parse.py and parse.sql are the shared Forge parse stage). `agent` writes <workdir>/<name>/agent/retrieval.py and needs
 `agentbricks init` to have run. Rendered files start with a checksum header: if one was edited by hand
 since the last render, nothing is written unless you pass --force. Prints a JSON summary.
 """
@@ -21,11 +21,11 @@ import re
 import sys
 from pathlib import Path
 
-sys.dont_write_bytecode = True  # importing ingest must not leave __pycache__ in the published skill folder
+sys.dont_write_bytecode = True  # importing prep_chunks must not leave __pycache__ in the published skill folder
 
 import yaml  # noqa: E402
 
-from ingest import NAME_RE, metadata_columns  # noqa: E402  (same validation the ingest job applies)
+from prep_chunks import NAME_RE, metadata_columns  # noqa: E402  (same validation the chunk task applies)
 
 SCRIPTS = Path(__file__).resolve().parent
 APP_NAME_RE = re.compile(r"^[a-z0-9-]{1,17}$")  # agent-bricks-<name> must fit the 30-character app name limit
@@ -33,7 +33,8 @@ VOLUME_RE = re.compile(r"^/Volumes/[^/]+/[^/]+/[^/]+")
 WHOLE_SCALAR_RE = re.compile(r"(?m)^(\s*[\w-]+:[ \t]*)<([a-z_]+)>[ \t]*$")
 HEADER = "# Rendered by doc-qa-agent render.py from doc-qa.json (sha256:{digest}). Change doc-qa.json and re-render."
 HEADER_RE = re.compile(r"^# Rendered by doc-qa-agent render\.py .*\(sha256:([0-9a-f]{12})\)")
-JOB_FILES = ["ingest.py", "sync_index.py", "parse_documents.sql", "prep_chunks.sql"]
+JOB_FILES = ["parse.py", "parse.sql", "prep_chunks.py", "prep_chunks.sql", "sync_index.py"]
+CHART_ELEMENT_TYPES = ("*", "figure")  # chart insights read the figure descriptions ai_parse_document writes
 FILTER_BLOCK_RE = re.compile(r"(?ms)^FILTER_VALUES: dict\[str, list\[str\] \| None\] = \{.*?^\}$")
 TRIGGER_BLOCK_RE = re.compile(r"(?ms)^      trigger:\n.*?wait_after_last_change_seconds: \d+\n")
 
@@ -85,6 +86,14 @@ def edited_by_hand(path: Path) -> bool:
 
 def render_bundle(state: dict) -> str:
     raw_schema, columns = metadata(state)
+    element_types = state.get("description_element_types", "*")
+    page_images = state.get("page_images_path", "")
+    charts = state.get("chart_insights") is True
+    if charts and (not page_images or element_types not in CHART_ELEMENT_TYPES):
+        raise SystemExit(
+            "chart_insights needs page images (page_images_path) and figure descriptions "
+            f"(description_element_types {' or '.join(map(repr, CHART_ELEMENT_TYPES))})"
+        )
     values = {
         "bundle_name": f"{state['name']}-ingest",
         "catalog": state["catalog"],
@@ -93,8 +102,12 @@ def render_bundle(state: dict) -> str:
         "volume_path": state["volume_path"].rstrip("/"),
         "metadata_schema": raw_schema,
         "metadata_columns": ",".join(columns),
-        "description_element_types": state.get("description_element_types", "*"),
-        "page_images_path": state.get("page_images_path", ""),
+        "description_element_types": element_types,
+        "page_images_path": page_images,
+        "split_pages": "folder" if state.get("split_pages") is True else "none",
+        "chart_insights": "true" if charts else "false",
+        "chart_model": state.get("chart_model") or state.get("chat_model") or "",
+        "chart_prompt": state.get("chart_prompt", ""),
         "vs_endpoint": state["vs_endpoint"],
         "embedding_model": state["embedding_model"],
         "profile": state["profile"],

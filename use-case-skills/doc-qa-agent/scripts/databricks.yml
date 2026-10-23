@@ -29,6 +29,18 @@ variables:
   page_images_path:
     description: Volume directory for rendered page images; empty disables
     default: <page_images_path>
+  split_pages:
+    description: "'folder' when each folder holds the single-page files of one document, else 'none'"
+    default: <split_pages>
+  chart_insights:
+    description: "'true' to read charts with a vision model before chunking"
+    default: <chart_insights>
+  chart_model:
+    description: system.ai model for chart reading; empty uses the script default
+    default: <chart_model>
+  chart_prompt:
+    description: Prompt for chart reading; empty uses the script default
+    default: <chart_prompt>
   vs_endpoint:
     description: AI Search endpoint name
     default: <vs_endpoint>
@@ -43,6 +55,9 @@ resources:
       max_concurrent_runs: 1
       queue:
         enabled: true
+      parameters:
+        - name: full_refresh  # `databricks bundle run doc_qa_ingest --params full_refresh=true` re-chunks without re-parsing
+          default: "false"
       trigger:
         pause_status: UNPAUSED
         file_arrival:
@@ -55,11 +70,13 @@ resources:
             environment_version: "4"  # ai_parse_document needs VARIANT (env >= 3); use the latest
             dependencies:
               - databricks-sdk>=0.124.0
+              - pypdf>=4  # page counts, to route PDFs over 500 pages to sliced parsing
+              - pillow>=10  # chart crops
       tasks:
-        - task_key: parse_and_chunk
+        - task_key: parse
           environment_key: default
           spark_python_task:
-            python_file: src/ingest.py
+            python_file: src/parse.py
             parameters:
               - --catalog
               - ${var.catalog}
@@ -69,17 +86,42 @@ resources:
               - ${var.prefix}
               - --volume-path
               - ${var.volume_path}
-              - --metadata-schema
-              - ${var.metadata_schema}
               - --description-element-types
               - ${var.description_element_types}
               - --page-images-path
               - ${var.page_images_path}
+              - --split-pages
+              - ${var.split_pages}
+              - --sql-dir
+              - ${workspace.file_path}/src
+        - task_key: chunk
+          depends_on:
+            - task_key: parse
+          environment_key: default
+          spark_python_task:
+            python_file: src/prep_chunks.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${var.schema}
+              - --prefix
+              - ${var.prefix}
+              - --metadata-schema
+              - ${var.metadata_schema}
+              - --chart-insights
+              - ${var.chart_insights}
+              - --chart-model
+              - ${var.chart_model}
+              - --chart-prompt
+              - ${var.chart_prompt}
+              - --full-refresh
+              - "{{job.parameters.full_refresh}}"
               - --sql-dir
               - ${workspace.file_path}/src
         - task_key: sync_index
           depends_on:
-            - task_key: parse_and_chunk
+            - task_key: chunk
           environment_key: default
           spark_python_task:
             python_file: src/sync_index.py

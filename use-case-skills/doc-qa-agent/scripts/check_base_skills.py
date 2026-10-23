@@ -2,12 +2,13 @@
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6"]
 # ///
-"""Check that the base skills this skill depends on are installed next to it (doc-qa-agent module 00).
+"""Check that the base skills a use-case skill depends on are installed next to it (module 00).
 
 Reads every base skill listed in ucs.yaml and compares it with that skill's SKILL.md in the skills
 directory (by default, the folder that holds this skill). Exits 1 when a skill is missing or older than
 the version the modules were written against, because the modules cite reference files those
-versions don't have. Prints a JSON report either way.
+versions don't have. Prints a JSON report either way. Every use-case skill carries an identical copy;
+tests/test_shared_parse.py fails if the copies drift.
 
     uv run <skill>/scripts/check_base_skills.py [--skills-dir <dir>]
 """

@@ -43,6 +43,7 @@ The script prints the run ID and metrics, and exits with status 1 when a thresho
 | Wrong filters (zero hits) | `filters` argument in the tool span | Normalize metadata casing in the schema descriptions (module 02), regenerate `filter_values`, and render again |
 | Right passages, wrong numbers | Final answer vs passage | Prompt: show arithmetic, quote units; consider a stronger `MODEL` |
 | Multi-hop questions fail | Number of `search_documents` calls | Prompt to decompose first; if still failing, add the planner node (module 03) |
+| Questions about chart values fail | Retrieved chunk for the chart's page | Turn on `chart_insights` (module 02, step 3) and re-chunk with `full_refresh=true` |
 | Noisy context (table summaries, related questions) | Tool output | Add a `DatabricksReranker(columns_to_rerank=["chunk_to_embed"])` via the tool's `reranker=` argument in `agent/retrieval.py`. That's a hand edit, so later renders need `--force` and re-adding it |
 
 To compare runs, use the experiment UI, or **load** `databricks-mlflow-evaluation` `references/patterns-evaluation.md` (named runs). After a change passes, redeploy with `agentbricks deploy` (module 04).

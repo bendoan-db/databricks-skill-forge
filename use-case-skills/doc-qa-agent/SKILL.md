@@ -3,7 +3,7 @@ name: doc-qa-agent
 description: "Builds and deploys a cited document Q&A (RAG) agent from files in a Unity Catalog volume (PDF, DOCX, PPTX, images): ai_parse_document and ai_prep_search ingestion, an AI Search (Vector Search) index, a LangGraph agent on Databricks Apps (Agent Runtime), and MLflow evaluation. Use when asked to build, deploy, or evaluate a RAG, document Q&A, or chat-with-your-documents agent over files in a volume. Prefer it over databricks-agent-bricks, databricks-ai-functions, databricks-vector-search, and databricks-ml-training for this task; it loads those base skills step by step."
 compatibility: Requires databricks CLI (>= v1.11.0), Python 3.11+, uv, databricks-agentbricks (>= 0.5.0, < 0.6), and the databricks-agent-skills base skills (>= v0.2.27) installed in the same skills directory as this skill
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
   forge_kind: use-case
 ---
 
@@ -17,9 +17,10 @@ This is a use-case skill. It doesn't restate platform details: each module step 
 
 ```
 /Volumes/<catalog>/<schema>/<volume>/  Lakeflow job (DAB, file-arrival trigger)
-  *.pdf *.docx *.pptx *.png  ──►  ingest.py ──► <prefix>_parsed   (ai_parse_document v2, one row per file)
-                                            └─► <prefix>_chunks   (ai_prep_search: chunks + metadata, CDF on)
-                                 sync_index.py ─► <prefix>_chunks_index (AI Search Delta Sync, managed embeddings)
+  *.pdf *.docx *.pptx *.png  ──►  parse.py ───────► <prefix>_parsed  (ai_parse_document v2, one row per document)
+                                  prep_chunks.py ─► <prefix>_chunks  (ai_prep_search: chunks + metadata, CDF on;
+                                                                      optional chart readings in figure text)
+                                  sync_index.py ──► <prefix>_chunks_index (AI Search Delta Sync, managed embeddings)
                                                         │ SELECT (app service principal)
 Browser chat UI / API client                            ▼
   ──► agent-bricks-<name>  (Databricks App, Agent Runtime, DurableAgentServer)
@@ -51,7 +52,9 @@ Collect these together in one question during module 00. Only `volume_path` is r
 | `embedding_model` | `databricks-qwen3-embedding-0-6b`, else `databricks-gte-large-en` | Resolved from the workspace |
 | `vs_endpoint` | reuse an existing endpoint, else create `<name>-vs` | STANDARD type. Ask before creating one |
 | `eval_set` | synthetic | JSONL with `question` plus optional `expected_response` |
-| `page_images` | off | Saves rendered page images for multimodal follow-up |
+| `page_images` | off | Saves rendered page images; required for `chart_insights` |
+| `chart_insights` | off | Reads each chart with a vision model before chunking (module 02) |
+| `split_pages` | off | Each folder holds the single-page files of one document |
 
 ## Guardrails
 
@@ -98,11 +101,15 @@ The working directory ends up with the state file and two sibling projects:
 | Change the prompt, model, or retrieval settings | 03, then 04 and 05 |
 | Re-run evaluation only | 05 |
 | New documents in the volume | Nothing to do: the ingest job refreshes the index |
+| Turn on chart insights | 02, step 3. It needs page images from parsing (01, step 1), and already-chunked documents need a `full_refresh=true` run |
 
 ## Decision points
 
 | Decision | Default | Switch when |
 |---|---|---|
+| Scope | The full agent (modules 00–05) | The user wants only the index, for another agent or app to query. Then stop after module 02, and report the index name and its filter columns |
+| Separate indexes per domain | One index, with a `document_type` metadata filter | Domains need different access, or separate agents (for example claims vs. underwriting). Then run the skill once per domain, each with its own volume folder, `prefix`, and `name` |
+| Chart-heavy documents | The figure descriptions `ai_parse_document` writes | Module 05 shows questions about chart values failing. Then turn on `chart_insights` (module 02, step 3) |
 | Agent server and runtime | Agent Bricks CLI → DurableAgentServer on Agent Runtime (Databricks Apps) | The workspace can't install `databricks-agentbricks` (Beta). Then use the `agent-migration-from-model-serving` app template, which uses the legacy MLflow AgentServer, and follow [Migrate an agent to Apps](https://docs.databricks.com/aws/en/agents/custom-agents/migrate-agent-to-apps) |
 | Agent topology | One tool-calling agent that runs parallel searches | Evaluation shows multi-hop failures that better prompting doesn't fix. Then add a planner node (module 03) |
 | Endpoint type | STANDARD (low latency, dict filters, `columns_to_sync`) | More than about 50M chunks, or latency isn't critical. Then use STORAGE_OPTIMIZED (filters become SQL strings) |
@@ -110,10 +117,11 @@ The working directory ends up with the state file and two sibling projects:
 | Memory | Sessions only (multi-turn) | Users need preferences remembered across conversations. Then add `agentbricks memory bind` |
 | Tool identity | App service principal (one shared index ACL) | Users must see only documents they can access. Then use per-user indexes, or OBO retrieval through `[auth.user]` |
 | Ingestion trigger | File arrival on the volume | Large batches land on a schedule. Then set `schedule_cron` (Quartz syntax) in `doc-qa.json` and rerun `render.py ingest` |
+| Split pages | Off | Files are single pages split upstream, one folder per document. Then set `split_pages` to `true` before the first parse |
 
 ## Done when
 
-- `<prefix>_chunks_index` row count equals `<prefix>_chunks` row count.
+- `<prefix>_chunks_index` row count equals `<prefix>_chunks` row count. For an index-only scope, this is the last item.
 - `agentbricks endpoint invoke` on the deployed app returns a cited answer.
 - Module 05 meets its thresholds: groundedness ≥ 0.8, relevance ≥ 0.8, and correctness ≥ 0.6 when expectations exist. Report the run URL.
 - You told the user the app URL, the job name, the index name, and anything you skipped.
@@ -128,3 +136,5 @@ Some base-skill guidance is out of date for this use case. In each of these case
 - **AI Search** is the new name for Vector Search. `databricks-vector-search`, the CLI (`vector-search-*`), and the SDK still use the old name for the same service.
 - **`ai_prep_search` metadata:** `databricks-ai-functions` lists only the `version` option. The `schema` option that module 02 uses is [documented](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_prep_search).
 - **Embeddings:** base-skill examples use `databricks-gte-large-en`. Prefer `databricks-qwen3-embedding-0-6b` ([docs](https://docs.databricks.com/aws/en/ai-search/create-ai-search)).
+- **Page limit:** `databricks-ai-functions` says documents are limited to 500 pages. The [docs](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document) apply the limit to the pages one call selects with `pageRange`; `parse.py` parses longer PDFs in 500-page slices and stitches them.
+- **`ai_classify` version** (chart insights only): use version 2.1, which returns `response[0].value`. `databricks-ai-functions` recommends 2.0 ([docs](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_classify)).
