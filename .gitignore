@@ -1,3 +1,40 @@
+# Python caches and environments
 __pycache__/
+*.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Secrets and local config
+.env
+.env.*
+.databrickscfg
+
+# Databricks CLI bundle state (created by `databricks bundle deploy`)
+.databricks/
+
+# Local agent tooling: base skills installed for testing, session settings, review state
+.claude/
+.agents/
+.github/skills/
+.ai-dev-kit/
+.isaac/
+
+# Skill working-directory output, when a skill is run from the repo root
+/doc-qa.json
+/extraction.json
+/evals.jsonl
+/ground_truth.jsonl
+/*-ingest/
+/*-extract/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
