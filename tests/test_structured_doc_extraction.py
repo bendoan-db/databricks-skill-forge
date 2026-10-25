@@ -1,4 +1,4 @@
-"""Checks for use-case-skills/structured-doc-extraction that need no workspace (cross-skill checks are in test_skills.py)."""
+"""Checks for skills/forge-structured-doc-extraction that need no workspace (cross-skill checks are in test_skills.py)."""
 
 import argparse
 import ast
@@ -9,7 +9,7 @@ import pytest
 import yaml
 from conftest import SKILLS_DIR, load_script, run_script
 
-SKILL = "structured-doc-extraction"
+SKILL = "forge-structured-doc-extraction"
 SCRIPTS = SKILLS_DIR / SKILL / "scripts"
 extract = load_script(SKILL, "extract")
 

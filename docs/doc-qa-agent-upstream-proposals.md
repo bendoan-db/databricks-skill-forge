@@ -1,48 +1,12 @@
 # Draft change proposals for databricks-agent-skills
 
-Drafts for the base-skill gaps that `use-case-skills/doc-qa-agent` works around, in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Checked against upstream v0.2.29. Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in `ucs.yaml`.
+Drafts for the base-skill gaps that `skills/forge-doc-qa-agent` works around, in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Checked against upstream v0.2.29. Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in `ucs.yaml`.
 
-The Knowledge Assistant deprecation is left out, because there's no public notice to cite yet. Gaps shared with `structured-doc-extraction` (`ai_classify` version 2.1, PDFs over 500 pages) are drafted in `structured-doc-extraction-upstream-proposals.md`.
-
----
-
-## 1. Document the `ai_prep_search` `schema` option
-
-**Problem or opportunity.** `databricks-ai-functions/references/1-task-functions.md` lists only `version` under `ai_prep_search` options. The function also takes a `schema` option that extracts typed, document-level metadata into each chunk's `metadata`. Agents that follow the skill can't build filterable indexes from it.
-
-**Proposed change.** Add the `schema` option to the `ai_prep_search` section, with a short example and the supported field types, and show how per-chunk `metadata` becomes filter columns in the custom RAG pipeline pattern.
-
-**Affected skill or area.** `databricks-ai-functions` (`references/1-task-functions.md`, `ai_prep_search` section).
-
-**Additional context.** [ai_prep_search docs](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_prep_search).
+The Knowledge Assistant deprecation is left out, because there's no public notice to cite yet. The ingestion and index gaps (the `ai_prep_search` `schema` option, the AI Search rename, the embedding model) moved to `unstructured-doc-extraction-upstream-proposals.md` with that skill; the AI Search rename applies to this skill too.
 
 ---
 
-## 2. Rename Vector Search to AI Search
-
-**Problem or opportunity.** `databricks-vector-search` still says "Databricks Vector Search" and refers to the `databricks-vectorsearch` package. The docs now call the product AI Search and use the `databricks-ai-search` client.
-
-**Proposed change.** Use the AI Search name, note that the CLI command groups and SDK classes keep the `vector-search` names, and point to the `databricks-ai-search` client.
-
-**Affected skill or area.** `databricks-vector-search` (`SKILL.md` and references).
-
-**Additional context.** [AI Search docs](https://docs.databricks.com/aws/en/ai-search/ai-search).
-
----
-
-## 3. Update the embedding model recommendation
-
-**Problem or opportunity.** `databricks-vector-search` uses `databricks-gte-large-en` in its examples and model table and doesn't mention `databricks-qwen3-embedding-0-6b`. The docs recommend qwen3 for production on standard endpoints.
-
-**Proposed change.** Recommend `databricks-qwen3-embedding-0-6b` for production, keep `databricks-gte-large-en` as a fallback, and note that the embedding model can't change without rebuilding the index.
-
-**Affected skill or area.** `databricks-vector-search` (`SKILL.md`, embedding model table).
-
-**Additional context.** [Create an AI Search index](https://docs.databricks.com/aws/en/ai-search/create-ai-search).
-
----
-
-## 4. Retire Model Serving agent deployment patterns
+## 1. Retire Model Serving agent deployment patterns
 
 **Problem or opportunity.** `databricks-ml-training/references/genai-agents.md` deploys LangGraph agents with `agents.deploy()` to Model Serving, and `databricks-vector-search/references/end-to-end-rag.md` builds a `ChatAgent`. Agent Runtime on Databricks Apps is now the documented runtime for custom agents.
 
@@ -54,7 +18,7 @@ The Knowledge Assistant deprecation is left out, because there's no public notic
 
 ---
 
-## 5. Cover the Agent Bricks CLI
+## 2. Cover the Agent Bricks CLI
 
 **Problem or opportunity.** No skill covers the Agent Bricks CLI: `agentbricks init`, `agent.toml`, DurableAgentServer, Agent Runtime, or managed sessions and memory. Agents fall back to the Model Serving patterns above.
 

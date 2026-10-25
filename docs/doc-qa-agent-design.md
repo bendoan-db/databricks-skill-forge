@@ -1,6 +1,6 @@
-# doc-qa-agent design notes
+# forge-doc-qa-agent design notes
 
-Maintainer notes for `use-case-skills/doc-qa-agent`. This file sits outside the skill folder, so it isn't published and agents never load it.
+Maintainer notes for `skills/forge-doc-qa-agent`. This file sits outside the skill folder, so it isn't published and agents never load it. Since 0.4.0, the ingestion half (parsing, chunking, the index) is `forge-unstructured-doc-extraction`; the ingestion rows below describe that skill now, and its own notes are in `unstructured-doc-extraction-design.md`.
 
 ## Changes from the foundation repo
 
@@ -31,7 +31,7 @@ The skill generalizes [databricks-financebench-agent](https://github.com/bendoan
 
 ## Changes in v0.3.0
 
-Built alongside `structured-doc-extraction` from the advance-document-processing repo; see `structured-doc-extraction-design.md` for the source mapping and the assumptions not yet verified in a workspace.
+Built alongside `forge-structured-doc-extraction` from the advance-document-processing repo; see `structured-doc-extraction-design.md` for the source mapping and the assumptions not yet verified in a workspace.
 
 - **Shared parse stage.** `ingest.py` and `parse_documents.sql` became `parse.py` and `parse.sql`, identical in both skills, plus `prep_chunks.py` for chunking. The job now has three tasks: `parse`, `chunk`, `sync_index`. The parsed table gained `source_files`, `page_count`, and `parse_mode`; tables created by v0.2.0 must be dropped before the first v0.3.0 run (none were deployed).
 - **Long PDFs and split pages.** PDFs over 500 pages are parsed in `pageRange` slices instead of failing; `split_pages` assembles folders of page files.
@@ -40,3 +40,12 @@ Built alongside `structured-doc-extraction` from the advance-document-processing
 - **Chart insights** (optional). Charts are classified from their parse descriptions, cropped from page images, read by `ai_query` with `files =>`, and appended to the figure description before `ai_prep_search`, so the readings keep their page numbers.
 - **Knowledge-base decisions.** The knowledge-base pipeline's classify-and-route stage is a `document_type` metadata filter on one index. New decision points cover an index-only scope and separate indexes per domain.
 
+## Changes in v0.4.0
+
+- **Split.** Modules 01–02 (ingest and parse, chunk and index) and their scripts moved to the new `forge-unstructured-doc-extraction` skill, which adds a retrieval evaluation as its gate. This skill keeps preflight, the agent, the app, and answer evaluation, renumbered 00–03. Rationale and the handoff contract are in `unstructured-doc-extraction-design.md`.
+- **Two state files.** `doc-qa.json` now holds only agent values (`index_state`, `name`, `chat_model`, `eval_set`, then `experiment`, `app_url`). Index values (`profile`, `catalog`, `schema`, `index_name`, `metadata_schema`, `filter_values`, `corpus_description`) are read from `doc-index.json` at render time, never copied, so they can't go stale.
+- **`render.py`** renders only `agent/retrieval.py`; the `ingest` and `agent` subcommands are gone (`render.py --state doc-qa.json`). It no longer imports `prep_chunks.py`: the index skill validated the metadata types, so it only checks that `filter_values` names metadata columns.
+- **`evaluate.py`** no longer synthesizes questions. The index skill writes `evals.jsonl` with `expected_facts`, and module 03 copies it into the project before adding out-of-scope questions.
+- **`requires` in `ucs.yaml`.** The first use-case skill that depends on another. `check_base_skills.py` (shared) checks `requires` entries like base skills and reports them separately.
+- **Coverage gaps** for the `ai_prep_search` schema option, the embedding model, `ai_classify` v2.1, and the page limit moved with the ingestion modules. Knowledge Assistant and the AI Search rename stay here, and are recorded in both skills.
+- **Renamed `forge-doc-qa-agent`,** and normally started by the `forge` router. Its description no longer competes with the base skills; its routing evals moved to `skills/forge/evals/routing.yaml`. See `forge-design.md`.

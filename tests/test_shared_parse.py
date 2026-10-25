@@ -6,7 +6,7 @@ import io
 import pytest
 from conftest import SKILLS_DIR, load_script
 
-parse = load_script("doc-qa-agent", "parse")
+parse = load_script("forge-unstructured-doc-extraction", "parse")
 
 
 def args(**overrides) -> argparse.Namespace:
@@ -33,7 +33,7 @@ def doc(page_ids: list[int], element_ids: list[int] | None = None, errors=None) 
 def test_every_sql_placeholder_has_a_value():
     params = parse.build_params(args())
     extra = parse.slice_params(args(), 1, "501-1000")
-    for sql in parse.load_sections(SKILLS_DIR / "doc-qa-agent" / "scripts" / "parse.sql").values():
+    for sql in parse.load_sections(SKILLS_DIR / "forge-unstructured-doc-extraction" / "scripts" / "parse.sql").values():
         parse.render(sql, {**params, **extra})  # KeyError on a placeholder nothing fills
 
 

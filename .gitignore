@@ -25,10 +25,11 @@ venv/
 
 # Skill working-directory output, when a skill is run from the repo root
 /doc-qa.json
+/doc-index.json
 /extraction.json
 /evals.jsonl
 /ground_truth.jsonl
-/*-ingest/
+/*-index/
 /*-extract/
 
 # OS and editor files

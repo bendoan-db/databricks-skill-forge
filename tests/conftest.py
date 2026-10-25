@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True  # importing skill scripts must not leave __pycache__ in the published skill folders
-SKILLS_DIR = Path(__file__).resolve().parents[1] / "use-case-skills"
+SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
 SKILLS = sorted(p.name for p in SKILLS_DIR.iterdir() if (p / "ucs.yaml").is_file())
 
 

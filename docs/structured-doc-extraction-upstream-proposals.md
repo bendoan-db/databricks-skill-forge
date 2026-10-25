@@ -1,6 +1,6 @@
-# Draft change proposals for databricks-agent-skills (structured-doc-extraction)
+# Draft change proposals for databricks-agent-skills (forge-structured-doc-extraction)
 
-Drafts for the base-skill gaps that `use-case-skills/structured-doc-extraction` works around (and, for proposals 1 and 3, `doc-qa-agent` too), in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Checked against upstream `main` on 2026-10-23 (v0.2.34). Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in each `ucs.yaml`.
+Drafts for the base-skill gaps that `skills/forge-structured-doc-extraction` works around (and, for proposals 1 and 3, `forge-unstructured-doc-extraction` too), in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Checked against upstream `main` on 2026-10-23 (v0.2.34). Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in each `ucs.yaml`.
 
 The Agent Bricks Information Extraction deprecation is left out: no base skill covers it, and there's no public notice to cite yet.
 

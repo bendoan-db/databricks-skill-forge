@@ -1,6 +1,6 @@
-# structured-doc-extraction design notes
+# forge-structured-doc-extraction design notes
 
-Maintainer notes for `use-case-skills/structured-doc-extraction`, and for the parts of `doc-qa-agent` v0.3.0 built from the same source. This file sits outside the skill folders, so it isn't published and agents never load it.
+Maintainer notes for `skills/forge-structured-doc-extraction`, and for the parts of `doc-qa-agent` 0.3.0 built from the same source (now in `forge-unstructured-doc-extraction`; see `unstructured-doc-extraction-design.md`). This file sits outside the skill folders, so it isn't published and agents never load it.
 
 ## Where the source repo went
 
@@ -11,19 +11,19 @@ The skill is built from [advance-document-processing](https://github.com/databri
 | `document-page-classify-extraction` | This skill: layout `packet` (modules 02–04) |
 | `ai-extract-word-level-citation` | This skill: layout `single_type`, and module 06 (localization) |
 | `evaluation-harness` | This skill: module 05. Recipes 01–02 are the confidence profile; 03–04 are `evaluate.py` |
-| `ai-search-knowledge-base-creation` | `doc-qa-agent`: its classify step is a `document_type` metadata filter; added the index-only scope and per-domain decision points |
-| `document-embedding-chart-analysis` | `doc-qa-agent`: optional chart insights (module 02, step 3) |
+| `ai-search-knowledge-base-creation` | `forge-unstructured-doc-extraction` (built as `doc-qa-agent` 0.3.0): its classify step is a `document_type` metadata filter; the index-only scope became that skill, and the per-domain decision point moved with it |
+| `document-embedding-chart-analysis` | `forge-unstructured-doc-extraction`: optional chart insights (module 02, step 3) |
 | `parse-pdfs-with-large-num-of-pages` | Shared parse stage (`parse.py`): 500-page slices |
 | `combine-document-pages` | Shared parse stage (`parse.py`): `--split-pages folder` |
 
-One skill per folder would have meant seven skills that all start with "parse the PDFs in a volume", competing for the same prompts and repeating preflight, parsing, and guardrails. Two skills with different outputs (an agent vs. tables) route cleanly; the routing evals in each `scenarios.yaml` test that.
+One skill per folder would have meant seven skills that all start with "parse the PDFs in a volume", competing for the same prompts and repeating preflight, parsing, and guardrails. Skills with different outputs (an index, an agent, tables) route cleanly; `forge` routes by output, and its routing evals test that. The ADP split made two skills, `doc-qa-agent` and this one; `forge-doc-qa-agent` 0.4.0 later split its index into `forge-unstructured-doc-extraction`.
 
 ## Changes from ADP
 
 | ADP | This skill | Why |
 |---|---|---|
 | Batch bundles reread the whole volume with `CREATE OR REPLACE` | Incremental parse keyed on `(path, modificationTime)`; downstream stages keyed on `(path, parsed_at)` in `<prefix>_progress` | Every ADP batch run re-billed parsing (and re-embedding) for every file |
-| Each pipeline has its own bronze stage, with different defaults | One shared `parse.py`, identical in both skills | One place to fix parsing; the copies are tested for drift |
+| Each pipeline has its own bronze stage, with different defaults | One shared `parse.py`, identical in every skill that parses | One place to fix parsing; the copies are tested for drift |
 | Long-PDF stitching rewrote pages as `{page: {pageNumber, width, height}}` and left element bbox `page_id`s unshifted | `stitch()` renumbers `pages[].id`, `elements[].id`, `bbox[].page_id`, and `error_status[].page_id`, keeps every other field, and reports missing pages as errors | Downstream reads `pages[].id` and `bbox[0].page_id`; ADP's output didn't match the v2 schema its own pipelines read |
 | Split-page merge set a `page_number` field that the v2 schema doesn't have, on the driver | Same `stitch()`, in a Python UDF | Same schema fix; no collect to the driver |
 | Long-PDF partial-slice guard printed a warning | Missing pages go into `parse_error` | A warning in a job log is never read |
@@ -46,7 +46,11 @@ One skill per folder would have meant seven skills that all start with "parse th
 - **Typed tables.** `extract.py` derives DDL and SELECT fragments from each schema, and stops if an existing table lacks a column the schema now needs. Column names are backquoted, since fields like `date` collide with SQL keywords. The wrapper shape for arrays isn't documented, so array SQL unwraps both `{value: [...]}` and bare arrays.
 - **Paused until designed.** Module 01 parses with `bundle run --only parse` so the agent can read samples before designing labels and schemas. Until `document_types` exists, `render.py` renders the trigger `PAUSED`.
 - **Config file.** The job reads `src/extraction_config.json`, not task parameters, because schemas can exceed task parameter size limits. It carries the same checksum protection as `databricks.yml`, in a `_rendered_by` key.
-- **Shared files.** `parse.py`, `parse.sql`, and `check_base_skills.py` are listed under `shared` in both `ucs.yaml` files; `tests/test_skills.py` fails if the copies differ. Change one, then copy it over the other.
+- **Shared files.** `parse.py` and `parse.sql` are listed under `shared` in this skill's and `forge-unstructured-doc-extraction`'s `ucs.yaml`, and `check_base_skills.py` in every skill's; `tests/test_skills.py` fails if the copies differ. Change one, then copy it over the others.
+
+## Changes in 0.2.0
+
+- **Renamed `forge-structured-doc-extraction`,** and normally started by the `forge` router. The description no longer competes with the base skills, and the routing evals moved to `skills/forge/evals/routing.yaml` (`forge-design.md`). No change to the modules or the job.
 
 ## Not yet verified in a workspace
 

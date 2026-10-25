@@ -4,6 +4,8 @@ Use-case skills that let coding agents build complete Databricks solutions, not 
 
 The [Databricks Agent Skills](https://github.com/databricks/databricks-agent-skills) teach an agent one platform feature at a time: AI Functions, AI Search, Apps, Jobs, and so on. Real projects combine many of them, and agents often struggle to break a high-level goal into the right sequence of steps. A **use-case skill** does that decomposition. It takes the agent from one input to a deployed, evaluated solution through ordered modules, and it loads the base skill each step needs at the point it's needed.
 
+You start every build the same way: invoke the **`forge`** skill and say what you want. `forge` matches the request to one use-case skill and hands off to it. When no use case fits, it points you to the base skill that covers the request.
+
 Each use-case skill provides:
 
 - **Ordered modules** that each end with a **Verify** step the agent must pass before moving on.
@@ -16,71 +18,101 @@ Each use-case skill provides:
 
 | Skill | Version | What it builds |
 |---|---|---|
-| [`doc-qa-agent`](use-case-skills/doc-qa-agent/SKILL.md) | 0.3.0 | A document Q&A (RAG) agent that cites its sources, over the files in a Unity Catalog volume (PDF, DOCX, PPTX, images). It uses `ai_parse_document` and `ai_prep_search` ingestion (with optional chart readings by a vision model), an AI Search index, a LangGraph agent on Databricks Apps (Agent Runtime), and MLflow evaluation. It can also stop at the index, for another agent to query. Default model: Claude Sonnet 5.5 (`system.ai.claude-sonnet-5-5`). |
-| [`structured-doc-extraction`](use-case-skills/structured-doc-extraction/SKILL.md) | 0.1.0 | Typed Delta tables of the fields in a volume's documents, with a confidence score and citation for every value. It classifies mixed documents and splits multi-document packets (loan or claim files) with `ai_classify`, extracts per document type with `ai_extract`, keeps a review queue of low-confidence values, scores accuracy against labeled documents in MLflow, and can find word-level boxes for each value with OCR. |
+| [`forge`](skills/forge/SKILL.md) | 0.1.0 | The entry point. It matches your request to one of the use-case skills below and hands off to it, resumes a build already in the working directory, and points to a base skill when no use case fits. It builds nothing itself. |
+| [`forge-unstructured-doc-extraction`](skills/forge-unstructured-doc-extraction/SKILL.md) | 0.1.0 | An AI Search index over the files in a Unity Catalog volume (PDF, DOCX, PPTX, images), for an agent or app to query. It parses with `ai_parse_document`, chunks with `ai_prep_search` (document-level metadata filters, optional chart readings by a vision model), keeps the index fresh as files arrive, and scores retrieval (document and page hit rates) in MLflow. |
+| [`forge-doc-qa-agent`](skills/forge-doc-qa-agent/SKILL.md) | 0.4.0 | A document Q&A (RAG) agent that cites its sources: a LangGraph agent on Databricks Apps (Agent Runtime) that searches a `forge-unstructured-doc-extraction` index, evaluated with MLflow judges. It runs `forge-unstructured-doc-extraction` first when the documents aren't indexed yet. Default model: Claude Sonnet 5.5 (`system.ai.claude-sonnet-5-5`). |
+| [`forge-structured-doc-extraction`](skills/forge-structured-doc-extraction/SKILL.md) | 0.2.0 | Typed Delta tables of the fields in a volume's documents, with a confidence score and citation for every value. It classifies mixed documents and splits multi-document packets (loan or claim files) with `ai_classify`, extracts per document type with `ai_extract`, keeps a review queue of low-confidence values, scores accuracy against labeled documents in MLflow, and can find word-level boxes for each value with OCR. |
 
-Both skills parse with the same shared stage, which handles PDFs over the 500-page `ai_parse_document` limit and scans split into one file per page.
+`forge-unstructured-doc-extraction` and `forge-structured-doc-extraction` parse with the same shared stage, which handles PDFs over the 500-page `ai_parse_document` limit and scans split into one file per page.
 
 ## Requirements
 
-- Databricks CLI v1.11.0 or later, with an authenticated profile. The install steps below were verified with v1.20.0.
+- Databricks CLI v1.11.0 or later, with an authenticated profile. The installer was tested with v1.20.0. Some agents need newer versions for AI Dev Kit to target them: Gemini CLI needs v1.12.0, and Kiro needs v1.20.0.
+- git, to fetch AI Dev Kit.
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/).
-- The Databricks Agent Skills (v0.2.27 or later), installed as skill folders in the same skills directory as the use-case skill.
-- A Unity Catalog workspace with serverless compute, and permission to create jobs. `doc-qa-agent` also needs Databricks Apps and AI Search endpoints (or an existing endpoint). Word-level localization in `structured-doc-extraction` needs a classic job cluster. Each skill checks the exact privileges during preflight.
+- The Databricks Agent Skills (v0.2.27 or later), as skill folders in the same skills directory as `forge` and the use-case skills. The installer sets this up.
+- A Unity Catalog workspace with serverless compute, and permission to create jobs. `forge-unstructured-doc-extraction` also needs AI Search endpoints (or an existing endpoint), and `forge-doc-qa-agent` needs Databricks Apps. Word-level localization in `forge-structured-doc-extraction` needs a classic job cluster. Each skill checks the exact privileges during preflight.
 
-Each skill installs anything else it needs during preflight. For example, `doc-qa-agent` installs the Agent Bricks CLI (`databricks-agentbricks`).
+Each skill installs anything else it needs during preflight. For example, `forge-doc-qa-agent` installs the Agent Bricks CLI (`databricks-agentbricks`).
 
 ## Install
 
-Put the base skills and the use-case skills side by side in your agent's skills directory. These commands use `.claude/skills/` (Claude Code, project scope). For other agents, use their skills directory, such as `.agents/skills/`.
+Run the installer from the project folder where you use your agent (or pass `--global` to install for your user in every project):
 
 ```bash
 git clone https://github.com/bendoan-db/databricks-skill-forge.git
-
-# 1. Base skills, written as skill folders
-databricks aitools install --path .claude/skills
-
-# 2. The use-case skills you want, next to them
-cp -R databricks-skill-forge/use-case-skills/doc-qa-agent databricks-skill-forge/use-case-skills/structured-doc-extraction .claude/skills/
-
-# 3. Confirm every base skill each use-case skill needs is present and new enough
-uv run .claude/skills/doc-qa-agent/scripts/check_base_skills.py
-uv run .claude/skills/structured-doc-extraction/scripts/check_base_skills.py
+cd my-project
+../databricks-skill-forge/install.sh                    # Claude Code, this project
+../databricks-skill-forge/install.sh --tools claude,codex --dry-run   # see the plan first
 ```
 
-Use `--path`. Without it, `databricks aitools install` sets up a plugin for Claude Code, Codex, and GitHub Copilot, and `check_base_skills.py` looks for the base skills next to each use-case skill, not inside a plugin. Restart your agent after installing so it picks up the new skills.
+It shows its plan, asks once, and then:
+
+1. **Runs [AI Dev Kit](https://github.com/databricks-solutions/ai-dev-kit) v0.2.0.**
+   - It installs every stable Databricks base skill through `databricks aitools`, plus the MLflow skills.
+   - It registers the Databricks MCP server with each agent. The server runs from an AI Dev Kit checkout in `~/.databricks-skill-forge/ai-dev-kit`.
+2. **Copies the Forge skills** (`forge` and the use-case skills) into the same skills directories, and removes Forge skills installed under their names from before the `forge-` prefix.
+3. **Checks** that each use-case skill finds every base skill it needs.
+
+| Option | Effect |
+|---|---|
+| `-g`, `--global` | Install for your user, in every project |
+| `-d`, `--dir DIR` | Install into this project instead of the current directory |
+| `-t`, `--tools LIST` | Agents to install for (default `claude`): `claude`, `codex`, `copilot`, `cursor`, `gemini`, `antigravity`, `opencode`, `kiro`, `windsurf` |
+| `-p`, `--profile NAME` | Databricks CLI profile the MCP server uses (default `DEFAULT`) |
+| `--no-mcp` | Skip the MCP server |
+| `--forge-only` | Install or update only the Forge skills, next to base skills that are already installed |
+| `--ai-dev-kit-ref REF` | Use another AI Dev Kit release or branch |
+| `--dry-run` | Print the plan and change nothing |
+| `-y`, `--yes` | Don't ask for confirmation (needed when there's no terminal) |
+
+The installer requests the base skills by name. AI Dev Kit's default "all skills" install puts them in a plugin for Claude Code, Codex, and Copilot, and Forge needs them as folders in the same skills directory. If that plugin is already installed, the installer says so, and gives the command to remove it, because Claude Code would otherwise see two copies.
+
+Rerun the installer to update. Update only the base skills with `databricks aitools update`. Restart your agent after installing, so it loads the new skills.
+
+**Without the installer:** put the base skills in your agent's skills directory with `databricks aitools install --path .claude/skills`, then `cp -R databricks-skill-forge/skills/* .claude/skills/`. The `--path` flag matters: without it, `aitools` installs a plugin instead of folders. Then check each use-case skill with `uv run .claude/skills/<skill>/scripts/check_base_skills.py`. This route doesn't set up the MCP server.
 
 ## Use
 
-Ask your agent in plain language. It picks the skill from what you want at the end.
+Invoke `forge` and say what you want built, for example `/forge build a document Q&A agent over /Volumes/main/legal/contracts`. Type just `/forge` to see the use cases. A plain request without `/forge` ("build a chatbot over the PDFs in my volume") should still start in `forge`; the routing evals check that.
 
-### Document Q&A
+`forge` picks the use case from what you want at the end: an agent that answers questions, a search index, or values in tables. If your request could mean more than one, it asks. It tells you which use case it picked, then the use-case skill takes over. If the working directory already has a build in progress, `forge` offers to resume it.
 
-> Build a document Q&A agent over the PDFs in /Volumes/main/legal/contracts and deploy it as a Databricks App.
+### Document index
 
-`doc-qa-agent` runs six modules in order:
+> /forge Parse the PDFs in /Volumes/main/legal/contracts and build a search index our app can query.
+
+`forge-unstructured-doc-extraction` runs four modules in order:
 
 | # | Module | Result |
 |---|---|---|
-| 00 | Preflight | Inputs resolved, tooling and base skills checked, your go-ahead on cost |
+| 00 | Preflight | Inputs resolved, base skills checked, your go-ahead on cost |
 | 01 | Ingest and parse | A bundle-managed job that parses the volume's files and reruns when new files arrive |
 | 02 | Chunk and index | Search chunks with document-level metadata, served by an AI Search index |
-| 03 | Agent | A LangGraph agent that answers with `[file_name, p. N]` citations, tested locally |
-| 04 | Deploy app | The agent running on Databricks Apps as `agent-bricks-<name>` |
-| 05 | Evaluate | An MLflow evaluation run, gated on groundedness ≥ 0.8, relevance ≥ 0.8, and correctness ≥ 0.6 |
+| 03 | Evaluate retrieval | An MLflow run, gated on a document hit rate ≥ 0.9 and a page hit rate ≥ 0.8 |
 
-The agent asks before it starts anything billable:
-- parsing (charged per page);
-- creating an AI Search endpoint (charged while it exists);
-- deploying the app.
+Before building anything, the agent asks where the documents are, which AI Search endpoint to use, what to name the index, and whether the index must stay current as new files arrive. If you don't name an endpoint and can't create one, it stops and asks you for one. It also asks before it starts anything billable: parsing and chunking (charged per page and token), or creating an AI Search endpoint (charged while it exists). Settings are saved to `doc-index.json` in the working directory, the eval set to `evals.jsonl`, and the job is `<name>-index/`.
 
-It shares the app only with the people you name. Resolved settings are saved to `doc-qa.json` in the working directory, so a later session can resume where the last one stopped. When it's done, the working directory holds two projects: `<name>-ingest/` (the ingestion bundle) and `<name>/` (the Agent Bricks agent).
+### Document Q&A
+
+> /forge Build a document Q&A agent over the PDFs in /Volumes/main/legal/contracts and deploy it as a Databricks App.
+
+`forge-doc-qa-agent` first runs `forge-unstructured-doc-extraction` if the documents aren't indexed yet, then runs four modules in order:
+
+| # | Module | Result |
+|---|---|---|
+| 00 | Preflight | The index found (or built), inputs resolved, tooling and skills checked, your go-ahead on cost |
+| 01 | Agent | A LangGraph agent that answers with `[file_name, p. N]` citations, tested locally |
+| 02 | Deploy app | The agent running on Databricks Apps as `agent-bricks-<name>` |
+| 03 | Evaluate | An MLflow evaluation run, gated on groundedness ≥ 0.8, relevance ≥ 0.8, and correctness ≥ 0.6 |
+
+The agent asks before deploying the app, and shares it only with the people you name. Its settings are saved to `doc-qa.json`, next to the index's `doc-index.json`, so a later session can resume where the last one stopped. When it's done, the working directory also holds `<name>/`, the Agent Bricks agent.
 
 ### Structured extraction
 
-> Our loan files in /Volumes/main/lending/loan_files are single PDFs with many documents inside. Pull the borrower's income and bank balances into tables.
+> /forge Our loan files in /Volumes/main/lending/loan_files are single PDFs with many documents inside. Pull the borrower's income and bank balances into tables.
 
-`structured-doc-extraction` runs these modules in order:
+`forge-structured-doc-extraction` runs these modules in order:
 
 | # | Module | Result |
 |---|---|---|
@@ -98,21 +130,25 @@ The agent asks before parsing, extracting, re-extracting, or starting the OCR cl
 
 ```
 databricks-skill-forge/
-├── use-case-skills/       # one folder per use-case skill; each folder is what gets installed or published
-│   ├── doc-qa-agent/
+├── skills/                # one folder per skill; each folder is what gets installed or published
+│   ├── forge/             # router: SKILL.md (use-case table generated from each ucs.yaml), forge.yaml, evals/routing.yaml
+│   ├── forge-unstructured-doc-extraction/
 │   │   ├── SKILL.md       # entry point: inputs, guardrails, workflow, decision points
 │   │   ├── modules/       # one file per step; each ends with a Verify gate
 │   │   ├── scripts/       # templates and helpers the agent renders, copies, or runs
-│   │   ├── evals/         # end-to-end certification scenarios and routing prompts
-│   │   └── ucs.yaml       # manifest: version, base-skill dependencies, shared files, known gaps, tracked platform facts
-│   └── structured-doc-extraction/   # same layout
+│   │   ├── evals/         # end-to-end certification scenarios, each started through forge
+│   │   └── ucs.yaml       # manifest: version, catalog entry for forge, base-skill dependencies, shared files, known gaps, tracked facts
+│   ├── forge-doc-qa-agent/                # same layout
+│   └── forge-structured-doc-extraction/   # same layout
 ├── docs/                  # maintainer notes; not part of any published skill
+├── install.sh             # installer: base skills and MCP server through AI Dev Kit, then the Forge skills
+├── tools/                 # maintainer scripts, such as the forge catalog generator; not published
 └── tests/                 # checks that run without a Databricks workspace
 ```
 
 ## Contributing
 
-`doc-qa-agent` and `structured-doc-extraction` are the reference implementations. A new use-case skill should follow their shape and these rules:
+`forge-unstructured-doc-extraction`, `forge-doc-qa-agent`, and `forge-structured-doc-extraction` are the reference implementations. A new use-case skill should follow their shape and these rules:
 
 - **Point to base skills; don't restate them.** A step that needs platform detail names the base skill and reference file in a **Load:** line. Base skills aren't loaded up front.
 - **Gate every module.** Each module ends with a Verify step that can actually fail.
@@ -122,14 +158,16 @@ databricks-skill-forge/
 - **Stay within skill limits:** at most 50 files or folders, at most 3 levels deep, text files only, and a frontmatter description of at most 1,024 characters.
 - **Keep maintainer rationale in `docs/`,** not in the skill. Anything in the skill folder can be loaded into an agent's context.
 - **Share by copying.** Each skill folder is published on its own, so skills can't import each other. Files they share, such as the parse stage (`scripts/parse.py`, `scripts/parse.sql`), are listed under `shared` in `ucs.yaml` and must stay identical; the tests fail when they drift.
+- **Register it with `forge`.** Add a `catalog` block to its `ucs.yaml` (title, when to choose it, what it isn't for, what it produces, its state file, next steps), add it to `use_cases` in `skills/forge/forge.yaml`, run `uv run tools/build_forge_catalog.py`, and add routing cases to `skills/forge/evals/routing.yaml`. Its description should say it's normally started by `forge`, so the two don't compete.
+- **Build on another use-case skill through its state file.** `forge-doc-qa-agent` lists `forge-unstructured-doc-extraction` under `requires` in `ucs.yaml`, runs it when needed, and reads its `doc-index.json` without writing to it.
 
-Run the checks before opening a pull request. They cover the SQL template placeholders, the rendering, parsing, scoring, and base-skill check scripts, shared files, manifest-to-module consistency, eval thresholds, and the skill folder limits:
+Run the checks before opening a pull request. They cover the SQL template placeholders, the rendering, parsing, scoring, and base-skill check scripts, shared files, manifest-to-module consistency, eval thresholds, the skill folder limits, the forge catalog and routing cases, and the installer (with stand-in commands, offline):
 
 ```bash
 uv run --no-project --with pytest --with pyyaml --with pypdf --with rapidfuzz --with scipy pytest -q -p no:cacheprovider tests
 ```
 
-The end-to-end scenarios in `evals/scenarios.yaml` need a Databricks workspace.
+The end-to-end scenarios in each `evals/scenarios.yaml` need a Databricks workspace, and the routing evals in `skills/forge/evals/routing.yaml` need an agent harness.
 
 ## Roadmap
 

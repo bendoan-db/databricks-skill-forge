@@ -1,5 +1,7 @@
 """Checks every use-case skill must pass: manifest vs. module text, versions, thresholds, shared files, and folder limits.
 
+The forge router has no ucs.yaml, so only the folder limits apply to it here; tests/test_forge.py checks the rest.
+
     uv run --no-project --with pytest --with pyyaml --with pypdf --with rapidfuzz --with scipy \
         pytest -q -p no:cacheprovider tests
 """
@@ -18,7 +20,7 @@ def manifest(skill: str) -> dict:
 
 
 def test_skills_found():
-    assert {"doc-qa-agent", "structured-doc-extraction"} <= set(SKILLS)
+    assert {"forge-doc-qa-agent", "forge-structured-doc-extraction", "forge-unstructured-doc-extraction"} <= set(SKILLS)
 
 
 @pytest.mark.parametrize("skill", SKILLS)
@@ -56,15 +58,28 @@ def test_thresholds_agree(skill: str):
 
 @pytest.mark.parametrize("skill", SKILLS)
 def test_check_base_skills(skill: str, tmp_path: Path):
-    for module in manifest(skill)["modules"]:
-        for dep in module.get("base_skills", []):
-            meta = "" if dep["version"] == "unversioned" else f'metadata:\n  version: "{dep["version"]}"\n'
-            (tmp_path / dep["name"]).mkdir(exist_ok=True)
-            (tmp_path / dep["name"] / "SKILL.md").write_text(f"---\nname: {dep['name']}\ndescription: x\n{meta}---\n")
+    ucs = manifest(skill)
+    deps = [dep for module in ucs["modules"] for dep in module.get("base_skills", [])] + ucs.get("requires", [])
+    for dep in deps:
+        meta = "" if dep["version"] == "unversioned" else f'metadata:\n  version: "{dep["version"]}"\n'
+        (tmp_path / dep["name"]).mkdir(exist_ok=True)
+        (tmp_path / dep["name"] / "SKILL.md").write_text(f"---\nname: {dep['name']}\ndescription: x\n{meta}---\n")
     run_script(skill, "check_base_skills.py", "--skills-dir", str(tmp_path))
     (tmp_path / "databricks-core" / "SKILL.md").unlink()
     result = run_script(skill, "check_base_skills.py", "--skills-dir", str(tmp_path), check=False)
     assert result.returncode == 1 and "databricks-core" in result.stderr
+    for dep in ucs.get("requires", []):  # use-case skills this one runs first are checked the same way
+        (tmp_path / dep["name"] / "SKILL.md").unlink()
+        result = run_script(skill, "check_base_skills.py", "--skills-dir", str(tmp_path), check=False)
+        assert f"Use-case skills missing or too old: ['{dep['name']}']" in result.stderr
+
+
+def test_required_use_case_skills_exist():
+    for skill in SKILLS:
+        for dep in manifest(skill).get("requires", []):
+            assert dep["name"] in SKILLS, f"{skill} requires {dep['name']}, which isn't in skills/"
+            pinned, current = (tuple(map(int, str(v).split("."))) for v in (dep["version"], manifest(dep["name"])["version"]))
+            assert pinned <= current, f"{skill} requires {dep['name']} {dep['version']}, newer than the repo's copy"
 
 
 def test_shared_files_are_identical():
@@ -78,7 +93,7 @@ def test_shared_files_are_identical():
         assert len(copies) == 1, f"{name} differs between {skills}: copy one over the others"
 
 
-@pytest.mark.parametrize("skill", SKILLS)
+@pytest.mark.parametrize("skill", [*SKILLS, "forge"])
 def test_skill_folder_limits(skill: str):
     folder = SKILLS_DIR / skill
     entries = list(folder.rglob("*"))
