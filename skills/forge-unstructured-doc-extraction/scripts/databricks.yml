@@ -1,0 +1,148 @@
+# Template for the parse, chunk, and index refresh job of the forge-unstructured-doc-extraction use-case skill (modules 01-02).
+# Don't fill it by hand: `render.py` writes <name>-index/databricks.yml from doc-index.json,
+# replacing each whole-value <key> with a quoted value, and copies the job's scripts to src/.
+bundle:
+  name: <bundle_name>
+
+variables:
+  catalog:
+    description: Catalog for the tables and index
+    default: <catalog>
+  schema:
+    description: Schema for the tables and index
+    default: <schema>
+  prefix:
+    description: Table prefix (<prefix>_parsed, <prefix>_chunks)
+    default: <prefix>
+  index_name:
+    description: AI Search index name, created in the same catalog and schema
+    default: <index_name>
+  volume_path:
+    description: Source volume path, no trailing slash
+    default: <volume_path>
+  metadata_schema:
+    description: JSON array or ai_extract-style object for ai_prep_search; empty disables metadata
+    default: <metadata_schema>
+  metadata_columns:
+    description: Comma-separated keys of metadata_schema (index columns_to_sync); render.py derives it
+    default: <metadata_columns>
+  description_element_types:
+    description: ai_parse_document descriptionElementTypes ('*', 'figure', or '' to save cost)
+    default: <description_element_types>
+  page_images_path:
+    description: Volume directory for rendered page images; empty disables
+    default: <page_images_path>
+  split_pages:
+    description: "'folder' when each folder holds the single-page files of one document, else 'none'"
+    default: <split_pages>
+  chart_insights:
+    description: "'true' to read charts with a vision model before chunking"
+    default: <chart_insights>
+  chart_model:
+    description: system.ai model for chart reading; empty uses the script default
+    default: <chart_model>
+  chart_prompt:
+    description: Prompt for chart reading; empty uses the script default
+    default: <chart_prompt>
+  vs_endpoint:
+    description: AI Search endpoint name
+    default: <vs_endpoint>
+  embedding_model:
+    description: Embedding serving endpoint for managed embeddings
+    default: <embedding_model>
+
+resources:
+  jobs:
+    doc_index:
+      name: doc-index ${var.prefix}
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+      parameters:
+        - name: full_refresh  # `databricks bundle run doc_index --params full_refresh=true` re-chunks without re-parsing
+          default: "false"
+      trigger:  # continuous_updates; render.py drops it, or swaps in schedule_cron
+        pause_status: UNPAUSED
+        file_arrival:
+          url: ${var.volume_path}/
+          min_time_between_triggers_seconds: 300
+          wait_after_last_change_seconds: 120
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"  # ai_parse_document needs VARIANT (env >= 3); use the latest
+            dependencies:
+              - databricks-sdk>=0.124.0
+              - pypdf>=4  # page counts, to route PDFs over 500 pages to sliced parsing
+              - pillow>=10  # chart crops
+      tasks:
+        - task_key: parse
+          environment_key: default
+          spark_python_task:
+            python_file: src/parse.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${var.schema}
+              - --prefix
+              - ${var.prefix}
+              - --volume-path
+              - ${var.volume_path}
+              - --description-element-types
+              - ${var.description_element_types}
+              - --page-images-path
+              - ${var.page_images_path}
+              - --split-pages
+              - ${var.split_pages}
+              - --sql-dir
+              - ${workspace.file_path}/src
+        - task_key: chunk
+          depends_on:
+            - task_key: parse
+          environment_key: default
+          spark_python_task:
+            python_file: src/prep_chunks.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${var.schema}
+              - --prefix
+              - ${var.prefix}
+              - --metadata-schema
+              - ${var.metadata_schema}
+              - --chart-insights
+              - ${var.chart_insights}
+              - --chart-model
+              - ${var.chart_model}
+              - --chart-prompt
+              - ${var.chart_prompt}
+              - --full-refresh
+              - "{{job.parameters.full_refresh}}"
+              - --sql-dir
+              - ${workspace.file_path}/src
+        - task_key: sync_index
+          depends_on:
+            - task_key: chunk
+          environment_key: default
+          spark_python_task:
+            python_file: src/sync_index.py
+            parameters:
+              - --chunks-table
+              - ${var.catalog}.${var.schema}.${var.prefix}_chunks
+              - --index-name
+              - ${var.catalog}.${var.schema}.${var.index_name}
+              - --endpoint
+              - ${var.vs_endpoint}
+              - --embedding-model
+              - ${var.embedding_model}
+              - --metadata-columns
+              - ${var.metadata_columns}
+
+targets:
+  # No `mode: development`: development mode forces triggers to PAUSED, and this job exists to react to new files.
+  default:
+    default: true
+    workspace:
+      profile: <profile>

@@ -1,0 +1,93 @@
+# Routing evals for forge. With forge, the Forge use-case skills, and every databricks-agent-skills skill installed side by
+# side, each case runs in a fresh session; `workdir_files` are placed in the working directory first. The harness records what
+# forge does, and `expect` holds exactly one of:
+#   handoff: <use-case skill>    the skill forge reads and follows (step 6)
+#   ask: use_case_menu | end_result   the one question forge asks instead (steps 2-3)
+#   point_to: <base skill>       the base skill forge names when no use case fits (step 5)
+# plus optional checks: first_skill (the skill loaded first, for prompts without /forge), says, resume, offers_next.
+# Cheap enough to run on every PR. tests/test_forge.py checks that every skill named here exists.
+
+defaults:
+  upstream_versions: [v0.2.27, latest]     # databricks-agent-skills installed next to the skills
+  checks:
+    - loads_at_most_one_use_case_skill
+    - no_billable_actions_before_handoff
+
+cases:
+  # Each use case, described
+  - prompt: "/forge Build a chatbot that answers questions about the PDFs in /Volumes/main/legal/contracts, with citations"
+    expect: {handoff: forge-doc-qa-agent}
+  - prompt: "/forge I need a RAG agent over our policy documents in a Unity Catalog volume, deployed as a Databricks App"
+    expect: {handoff: forge-doc-qa-agent}
+  - prompt: "/forge Let people chat with the Word and PowerPoint files in /Volumes/hr/docs/handbook"
+    expect: {handoff: forge-doc-qa-agent}
+  - prompt: "/forge Create a document Q&A agent on Databricks and measure how accurate it is"
+    expect: {handoff: forge-doc-qa-agent}
+  - prompt: "/forge Parse the PDFs in /Volumes/main/legal/contracts and build a vector search index our app can query"
+    expect: {handoff: forge-unstructured-doc-extraction}
+  - prompt: "/forge Chunk and embed the Word and PowerPoint files in /Volumes/hr/docs/handbook for retrieval"
+    expect: {handoff: forge-unstructured-doc-extraction}
+  - prompt: "/forge Build a knowledge base index over the scanned policy documents in our volume, filterable by policy type"
+    expect: {handoff: forge-unstructured-doc-extraction}
+  - prompt: "/forge Our document search index keeps returning the wrong filings. Measure how good its retrieval is"
+    expect: {handoff: forge-unstructured-doc-extraction}
+  - prompt: "/forge Extract the invoice number, vendor, and total from the PDFs in /Volumes/main/ap/invoices into a table"
+    expect: {handoff: forge-structured-doc-extraction}
+  - prompt: "/forge Our loan files are single PDFs with many documents inside. Split them and pull the borrower's income and bank balances"
+    expect: {handoff: forge-structured-doc-extraction}
+  - prompt: "/forge Build a review queue for low-confidence fields extracted from the claim forms in our volume"
+    expect: {handoff: forge-structured-doc-extraction}
+  - prompt: "/forge How accurate is our pay stub extraction? We have labeled examples"
+    expect: {handoff: forge-structured-doc-extraction}
+
+  # Each use case, named
+  - prompt: "/forge doc QA agent"
+    expect: {handoff: forge-doc-qa-agent}
+  - prompt: "/forge document search index"
+    expect: {handoff: forge-unstructured-doc-extraction}
+  - prompt: "/forge structured extraction for /Volumes/main/hr/w2s"
+    expect: {handoff: forge-structured-doc-extraction}
+
+  # Without /forge: forge still loads first
+  - prompt: "Build a chatbot over the PDFs in /Volumes/main/legal/contracts"
+    expect: {first_skill: forge, handoff: forge-doc-qa-agent}
+  - prompt: "Pull the invoice totals from the PDFs in /Volumes/main/ap/invoices into a table"
+    expect: {first_skill: forge, handoff: forge-structured-doc-extraction}
+
+  # Ambiguous: one question, no guessing
+  - prompt: "/forge"
+    expect: {ask: use_case_menu}
+  - prompt: "/forge Do something useful with the PDFs in /Volumes/main/ops/scans"
+    expect: {ask: end_result}
+  - prompt: "/forge Process our contracts"
+    expect: {ask: end_result}
+
+  # Deprecated products: redirected, never built
+  - prompt: "/forge Build a Knowledge Assistant over our HR policies"
+    expect: {handoff: forge-doc-qa-agent, says: knowledge_assistant_deprecated}
+  - prompt: "/forge Set up Agent Bricks Information Extraction for our invoices"
+    expect: {handoff: forge-structured-doc-extraction, says: information_extraction_deprecated}
+
+  # Two use cases: one at a time, then the other is offered
+  - prompt: "/forge Pull the totals from our invoices in /Volumes/main/ap/invoices into a table, and let finance chat with the invoices"
+    expect: {handoff: forge-structured-doc-extraction, offers_next: forge-doc-qa-agent}
+
+  # Resume: the state file wins over a new match
+  - prompt: "/forge"
+    workdir_files: [doc-index.json, doc-qa.json]
+    expect: {handoff: forge-doc-qa-agent, resume: true}
+  - prompt: "/forge let's keep going"
+    workdir_files: [extraction.json]
+    expect: {handoff: forge-structured-doc-extraction, resume: true}
+
+  # No use case: point to a base skill
+  - prompt: "/forge Create a vector search index on main.sales.products for semantic product search"
+    expect: {point_to: databricks-vector-search}
+  - prompt: "/forge Write a SQL query that runs ai_parse_document on one file"
+    expect: {point_to: databricks-ai-functions}
+  - prompt: "/forge Classify the support tickets in main.support.tickets by urgency"
+    expect: {point_to: databricks-ai-functions}
+  - prompt: "/forge Train an XGBoost churn model and register it in Unity Catalog"
+    expect: {point_to: databricks-ml-training}
+  - prompt: "/forge Build a sales dashboard on main.sales.orders"
+    expect: {point_to: databricks-aibi-dashboards}

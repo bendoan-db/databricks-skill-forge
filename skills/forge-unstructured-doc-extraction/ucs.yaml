@@ -1,0 +1,182 @@
+# Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
+# and scripts/check_base_skills.py reads base_skills at runtime.
+name: forge-unstructured-doc-extraction
+version: 0.1.0
+owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
+dbs_release: dbs-2026.10                    # Forge base release; not published yet, so `upstream` is the working pin
+upstream: databricks/databricks-agent-skills@v0.2.34   # written against this tag (2026-10-23); modules 00-02 came from doc-qa-agent 0.3.0 (v0.2.29). Not yet certified in a workspace
+upstream_min: v0.2.27                       # oldest tag with every cited base skill and reference file
+inputs:
+  required: [volume_path, vs_endpoint, index_name, continuous_updates]   # module 00 step 1 asks for these first; vs_endpoint may be "create one"
+  optional: [profile, target_schema, name, metadata_schema, embedding_model, page_images, chart_insights, chart_model, split_pages, eval_set]
+shared:                                     # identical in every skill that carries them; tests/test_skills.py checks
+  - scripts/parse.py
+  - scripts/parse.sql
+  - scripts/check_base_skills.py
+
+catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
+  title: Document search index
+  choose_when: a search or retrieval index over documents, for an agent, app, or person to query (RAG retrieval, a knowledge base, chunks and embeddings)
+  not_for: an agent that answers the questions (forge-doc-qa-agent); field values in tables (forge-structured-doc-extraction)
+  produces: an AI Search index with metadata filters, a job that keeps it current, and a retrieval evaluation in MLflow
+  state_file: doc-index.json                # forge offers to resume this skill when the file is in <workdir>
+  next: [forge-doc-qa-agent]
+
+modules:
+  - id: 00-preflight
+    file: modules/00-preflight.md
+    scripts: [scripts/check_base_skills.py]
+    base_skills:
+      - name: databricks-core
+        version: 0.1.0
+        uses: [profile selection, auth, warehouse discovery]
+      - name: databricks-unity-gateway
+        version: 0.1.0
+        uses: [list system.ai model services for the chart model, sovereign-cloud fallback]
+      - name: databricks-vector-search
+        version: 0.1.0
+        uses: [endpoint types, list endpoints, get-index]
+      - name: databricks-unity-catalog
+        version: 0.3.0
+        uses: [effective grants]
+
+  - id: 01-ingest-parse
+    file: modules/01-ingest-parse.md
+    scripts: [scripts/render.py, scripts/databricks.yml, scripts/parse.py, scripts/parse.sql]
+    base_skills:
+      - name: databricks-ai-functions
+        version: 0.2.0
+        uses: [ai_parse_document v2 options, limits]
+      - name: databricks-unity-catalog
+        version: 0.3.0
+        uses: [volumes, grants]
+      - name: databricks-dabs
+        version: unversioned                # upstream SKILL.md has no metadata.version
+        uses: [bundle validate, deploy, run]
+      - name: databricks-jobs
+        version: 0.2.0
+        uses: [file arrival trigger on volumes]
+      - name: databricks-serverless
+        version: 0.3.2
+        uses: [environment_version]
+
+  - id: 02-chunk-index
+    file: modules/02-chunk-index.md
+    scripts: [scripts/render.py, scripts/prep_chunks.py, scripts/prep_chunks.sql, scripts/sync_index.py]
+    base_skills:
+      - name: databricks-ai-functions
+        version: 0.2.0
+        uses: [ai_prep_search, multimodal ai_query and ai_classify for chart insights]
+      - name: databricks-vector-search
+        version: 0.1.0
+        uses: [standard endpoint, delta sync index, managed embeddings, columns_to_sync, hybrid search, dict filters]
+
+  - id: 03-evaluate
+    file: modules/03-evaluate.md
+    scripts: [scripts/evaluate.py]
+    base_skills:
+      - name: databricks-vector-search
+        version: 0.1.0
+        uses: [query_index hybrid search, filters_json, troubleshooting]
+      - name: databricks-mlflow-evaluation
+        version: 0.1.0
+        uses: [eval dataset formats, experiment logging]
+    external:
+      - name: databricks-agents
+        version: ">=1.9.3"
+        uses: [generate_evals_df expected_facts and expected_retrieved_context]
+
+# Capabilities this skill needs but the pinned base release doesn't cover, or covers with stale facts.
+# The base-skill refiner reads these as routing hints (v_coverage_gaps). Docs win over base skills.
+# SKILL.md "Base-skill guidance to override" holds the runtime instructions for each entry.
+# After filing a change proposal upstream (drafts: docs/unstructured-doc-extraction-upstream-proposals.md and, for ai_classify
+# and the page limit, docs/structured-doc-extraction-upstream-proposals.md), add `upstream_issue: <url>`.
+coverage_gaps:
+  - capability: Knowledge Assistant (databricks-agent-bricks) offered for document Q&A over a volume
+    modules: [00-preflight]
+    kind: deprecated
+    evidence: []                             # skill owner, 2026-10-15: Knowledge Assistant is being deprecated; add the notice URL once published
+    stale_base_guidance: databricks-agent-bricks describes Knowledge Assistants for document Q&A
+  - capability: AI Search endpoint access control (CAN CREATE, CAN USE, CAN MANAGE)
+    modules: [00-preflight, 02-chunk-index]
+    kind: missing
+    evidence:
+      - url: https://docs.databricks.com/aws/en/security/auth/access-control/
+        date_modified: 2026-10-20
+    stale_base_guidance: databricks-vector-search/references/troubleshooting-and-operations.md attributes permission errors on create to CREATE TABLE and USE CATALOG/USE SCHEMA, which govern indexes, not endpoints
+  - capability: AI Search rename and databricks-ai-search client
+    modules: [02-chunk-index, 03-evaluate]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/ai-search/ai-search
+        date_modified: 2026-09-14
+  - capability: ai_prep_search schema option and per-chunk metadata
+    modules: [02-chunk-index]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_prep_search
+        date_modified: 2026-09-11
+  - capability: ai_classify version 2.1 (per-label objects; used for chart insights)
+    modules: [02-chunk-index]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_classify
+        date_modified: 2026-10-22
+    stale_base_guidance: databricks-ai-functions/references/1-task-functions.md recommends v2.0
+  - capability: Parsing PDFs over 500 pages with pageRange slices
+    modules: [01-ingest-parse]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
+        date_modified: 2026-10-22
+    stale_base_guidance: databricks-ai-functions/references/1-task-functions.md says "max 500 pages per document"
+  - capability: Production embedding model recommendation (databricks-qwen3-embedding-0-6b)
+    modules: [00-preflight, 02-chunk-index]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/ai-search/create-ai-search
+        date_modified: null                  # fill on the next ingest cycle
+  - capability: Synthetic eval sets with generate_evals_df
+    modules: [03-evaluate]
+    kind: missing
+    evidence:
+      - url: https://docs.databricks.com/aws/en/generative-ai/agent-evaluation/synthesize-evaluation-set
+        date_modified: 2026-09-11
+    stale_base_guidance: none; no base skill mentions generate_evals_df (checked at v0.2.34)
+
+# Platform facts this skill hard-codes. The refiner re-checks them like coverage_gaps; when one changes,
+# update every file in used_in.
+facts:
+  - fact: ai_parse_document accepts files up to 100 MB, and one call parses at most 500 pages
+    used_in: [scripts/parse.py, modules/00-preflight.md, modules/01-ingest-parse.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
+        checked: 2026-10-23
+  - fact: ai_parse_document's pageRange option must be a literal, so each slice is its own statement
+    used_in: [scripts/parse.py, scripts/parse.sql]
+    evidence: []                             # the docs show only literals; the advance-document-processing recipe reports a column fails. Confirm in a workspace
+  - fact: The Delta Sync embedding source column is capped at 32,764 bytes
+    used_in: [scripts/prep_chunks.sql, modules/02-chunk-index.md]
+    evidence: []                             # not found in the docs or base skills on 2026-10-15; needs a source
+  - fact: The default chart model is Claude Sonnet 5.5, model service system.ai.claude-sonnet-5-5 (legacy endpoint databricks-claude-sonnet-5-5)
+    used_in: [SKILL.md, modules/00-preflight.md, modules/02-chunk-index.md, scripts/prep_chunks.py, scripts/render.py]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models
+        checked: 2026-10-15
+  - fact: An AI Search endpoint holds up to 50 indexes
+    used_in: [modules/00-preflight.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/ai-search/ai-search
+        checked: 2026-10-15
+  - fact: Switch to STORAGE_OPTIMIZED above about 50M chunks
+    kind: heuristic                          # docs give STANDARD capacity as 320M vectors at 768 dims; 50M is this skill's cost threshold
+    used_in: [SKILL.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/ai-search/ai-search
+        checked: 2026-10-15
+  - fact: Retrieval passes at a document hit rate of 0.9 and a page hit rate of 0.8, at k = 8
+    kind: heuristic                          # initial floors; calibrate on the first certification runs (docs/unstructured-doc-extraction-design.md)
+    used_in: [scripts/evaluate.py, modules/03-evaluate.md, SKILL.md, evals/scenarios.yaml]
+    evidence: []
+
+scenarios: evals/scenarios.yaml

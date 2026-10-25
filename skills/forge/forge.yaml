@@ -1,0 +1,13 @@
+# Manifest for the forge router skill. tools/build_forge_catalog.py reads it, with each use-case skill's
+# `catalog` block in ucs.yaml, to render the Use cases and Resume tables in SKILL.md; tests/test_forge.py checks both.
+name: forge
+version: 0.1.0
+owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
+use_cases:                                  # every Forge use-case skill, in the order the Resume table checks state files
+  - name: forge-doc-qa-agent                # first: its workdir also holds the index's doc-index.json
+    min_version: 0.4.0                      # oldest version that knows it can be started by forge
+  - name: forge-unstructured-doc-extraction
+    min_version: 0.1.0
+  - name: forge-structured-doc-extraction
+    min_version: 0.2.0
+routing: evals/routing.yaml

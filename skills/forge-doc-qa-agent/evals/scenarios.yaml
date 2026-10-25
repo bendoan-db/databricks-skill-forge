@@ -1,0 +1,56 @@
+# End-to-end certification scenarios for forge-doc-qa-agent.
+# forge_ucs_validate runs these on every PR (U5), and forge_ucs_drift runs them on each base release (U9).
+# Each scenario first runs its `index` scenario from forge-unstructured-doc-extraction's scenarios.yaml (or reuses that
+# run's index), then executes modules 00-03 in a sandbox workspace twice: with this skill (candidate) and with
+# base skills only (base-only). The candidate must pass every check and must not score below base-only.
+
+defaults:
+  harness:
+    entry: forge                             # each run starts as `/forge <scenario description>`; routing evals are in skills/forge/evals/routing.yaml
+    auto_approve_cost_gates: sandbox_only    # never auto-approve outside the certification workspace
+    teardown: [app]                          # the index scenario tears down the index, job, and tables after this one
+    upstream_versions: [v0.2.27, latest]     # databricks-agent-skills installed next to the skill: ucs.yaml upstream_min, and the newest tag
+  thresholds:                                # same floors as scripts/evaluate.py
+    retrieval_groundedness: 0.8
+    relevance_to_query: 0.8
+    correctness: 0.6
+  checks:                                    # apply to every scenario, in addition to its own checks
+    - no_knowledge_assistant                 # the agent never creates or suggests an Agent Bricks Knowledge Assistant (being deprecated)
+
+scenarios:
+  - id: financebench-sec-filings
+    description: SEC filings Q&A with metadata filters, over the foundation repo's corpus
+    index: financebench-sec-filings          # forge-unstructured-doc-extraction scenario: 30 sampled questions and their documents
+    eval_set: index                          # the index scenario's evals.jsonl, with expected_response from data/finance_bench_evals.tsv
+    checks:
+      - app_status == RUNNING
+      - live_invoke_returns_citation          # [file_name, p. N] present in the deployed app's answer
+      - filtered_search_in_trace              # at least one search_documents call sends filters
+      - unanswerable_questions_declined >= 4/5
+
+  - id: mixed-office-docs
+    description: Non-PDF formats and no metadata schema; covers the unfiltered tool path
+    index: mixed-office-docs
+    eval_set: index                          # the index scenario's synthetic evals.jsonl (expected_facts)
+    checks:
+      - live_invoke_returns_citation
+      - unanswerable_questions_declined >= 4/5
+
+  - id: chart-heavy-deck
+    description: Answers that live in chart values; the index has chart insights on
+    index: chart-heavy-deck
+    eval_set: index                          # includes the 5 hand-written questions about values only in charts
+    checks:
+      - chart_value_questions_correct >= 4/5
+      - live_invoke_returns_citation
+
+  - id: index-from-scratch
+    description: No doc-index.json in the workdir; module 00 runs forge-unstructured-doc-extraction first, then returns
+    source:
+      generate: databricks-unstructured-pdf-generation   # base skill
+      documents: 5
+    teardown: [app, index, endpoint_if_created, job, tables]   # this scenario built its own index
+    checks:
+      - unstructured_doc_extraction_completed == [00-preflight, 01-ingest-parse, 02-chunk-index, 03-evaluate]
+      - doc_qa_name_length <= 17             # the index skill was told to keep name short enough for the app
+      - live_invoke_returns_citation

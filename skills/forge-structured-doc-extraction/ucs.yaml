@@ -1,0 +1,178 @@
+# Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
+# and scripts/check_base_skills.py reads base_skills at runtime.
+name: forge-structured-doc-extraction
+version: 0.2.0
+owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
+dbs_release: dbs-2026.10                    # Forge base release; not published yet, so `upstream` is the working pin
+upstream: databricks/databricks-agent-skills@v0.2.34   # written against this tag (2026-10-23); not yet certified in a workspace
+upstream_min: v0.2.27                       # oldest tag with every cited base skill and reference file
+inputs:
+  required: [volume_path]
+  optional: [profile, target_schema, name, layout, document_types, split_pages, review_threshold, ground_truth, localize]
+shared:                                     # identical in every skill that carries them; tests/test_shared_parse.py checks
+  - scripts/parse.py
+  - scripts/parse.sql
+  - scripts/check_base_skills.py
+
+catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
+  title: Structured extraction
+  choose_when: field values, entities, or line items from documents in tables; classifying or splitting document packets; a review queue; extraction accuracy
+  not_for: answering questions about documents (forge-doc-qa-agent); a search index (forge-unstructured-doc-extraction)
+  produces: typed Delta tables per document type with citations and confidence scores, a review queue, and an accuracy evaluation in MLflow
+  state_file: extraction.json               # forge offers to resume this skill when the file is in <workdir>
+  next: []
+
+modules:
+  - id: 00-preflight
+    file: modules/00-preflight.md
+    scripts: [scripts/check_base_skills.py]
+    base_skills:
+      - name: databricks-core
+        version: 0.1.0
+        uses: [profile selection, auth, warehouse discovery]
+      - name: databricks-unity-catalog
+        version: 0.3.0
+        uses: [effective grants]
+
+  - id: 01-ingest-parse
+    file: modules/01-ingest-parse.md
+    scripts: [scripts/render.py, scripts/databricks.yml, scripts/parse.py, scripts/parse.sql]
+    base_skills:
+      - name: databricks-ai-functions
+        version: 0.2.0
+        uses: [ai_parse_document v2 options, limits]
+      - name: databricks-unity-catalog
+        version: 0.3.0
+        uses: [volumes]
+      - name: databricks-dabs
+        version: unversioned                # upstream SKILL.md has no metadata.version
+        uses: [bundle validate, deploy, run --only]
+      - name: databricks-jobs
+        version: 0.2.0
+        uses: [file arrival trigger on volumes]
+      - name: databricks-serverless
+        version: 0.3.2
+        uses: [environment_version]
+
+  - id: 02-classify
+    file: modules/02-classify.md
+    scripts: [scripts/extract.py, scripts/extract.sql]
+    base_skills:
+      - name: databricks-ai-functions
+        version: 0.2.0
+        uses: [ai_classify labels with descriptions, instructions]
+
+  - id: 03-extract
+    file: modules/03-extract.md
+    scripts: [scripts/render.py, scripts/extract.py, scripts/extract.sql]
+    base_skills:
+      - name: databricks-ai-functions
+        version: 0.2.0
+        uses: [ai_extract advanced schema, version 2.1 citations and confidence scores]
+
+  - id: 04-tables-review
+    file: modules/04-tables-review.md
+    scripts: [scripts/extract.py, scripts/extract.sql]
+    base_skills:
+      - name: databricks-unity-catalog
+        version: 0.3.0
+        uses: [GRANT SELECT on tables and views]
+
+  - id: 05-evaluate
+    file: modules/05-evaluate.md
+    scripts: [scripts/evaluate.py]
+    base_skills:
+      - name: databricks-mlflow-evaluation
+        version: 0.1.0
+        uses: [is_correct judge, experiment logging]
+    external:
+      - name: mlflow
+        version: ">=3.1"
+        uses: [mlflow.genai.judges.is_correct, log_metrics, log_table]
+
+  - id: 06-localize
+    file: modules/06-localize.md
+    scripts: [scripts/render.py, scripts/databricks.yml, scripts/localize.py, scripts/localize.sql, scripts/install_tesseract.sh]
+    base_skills:
+      - name: databricks-jobs
+        version: 0.2.0
+        uses: [job clusters]
+      - name: databricks-serverless-migration
+        version: 0.1.0
+        uses: [Tesseract is a classic-only dependency]
+    external:
+      - name: pytesseract
+        version: ">=0.3.10"
+        uses: [image_to_data word boxes]
+      - name: rapidfuzz
+        version: ">=3"
+        uses: [fuzzy matching of values to OCR words]
+      - name: tesseract-ocr
+        version: apt                        # installed by install_tesseract.sh on the OCR job cluster
+        uses: [OCR engine]
+
+# Capabilities this skill needs but the pinned base release doesn't cover, or covers with stale facts.
+# The base-skill refiner reads these as routing hints (v_coverage_gaps). Docs win over base skills.
+# SKILL.md "Base-skill guidance to override" holds the runtime instructions for each entry.
+# After filing a change proposal upstream (drafts: docs/structured-doc-extraction-upstream-proposals.md), add `upstream_issue: <url>`.
+coverage_gaps:
+  - capability: ai_classify version 2.1 (VARIANT input, 1M-token context, per-label objects with confidence)
+    modules: [02-classify]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_classify
+        date_modified: 2026-10-22
+    stale_base_guidance: databricks-ai-functions/references/1-task-functions.md recommends v2.0, with a 128K-token limit
+  - capability: Bounding-box citations from ai_extract need VARIANT input
+    modules: [03-extract, 06-localize]
+    kind: missing
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_extract
+        date_modified: 2026-10-22
+  - capability: Parsing PDFs over 500 pages with pageRange slices
+    modules: [01-ingest-parse]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
+        date_modified: 2026-10-22
+    stale_base_guidance: databricks-ai-functions/references/1-task-functions.md says "max 500 pages per document"
+  - capability: Agent Bricks Information Extraction
+    modules: [03-extract, 05-evaluate]
+    kind: deprecated
+    evidence: []                             # skill owner, 2026-10-23: being deprecated; add the notice URL once published
+    stale_base_guidance: none in the base skills; the docs still describe it
+
+# Platform facts this skill hard-codes. The refiner re-checks them like coverage_gaps; when one changes,
+# update every file in used_in.
+facts:
+  - fact: ai_parse_document accepts files up to 100 MB, and one call parses at most 500 pages
+    used_in: [scripts/parse.py, modules/00-preflight.md, modules/01-ingest-parse.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
+        checked: 2026-10-23
+  - fact: ai_parse_document's pageRange option must be a literal, so each slice is its own statement
+    used_in: [scripts/parse.py, scripts/parse.sql]
+    evidence: []                             # the docs show only literals; the advance-document-processing recipe reports a column fails. Confirm in a workspace
+  - fact: ai_extract accepts at most 256 schema fields
+    used_in: [scripts/extract.py, modules/03-extract.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_extract
+        checked: 2026-10-23
+  - fact: ai_classify label descriptions are at most 1,000 characters
+    used_in: [scripts/extract.py, modules/02-classify.md]
+    evidence:
+      - base_skill: databricks-ai-functions
+        file: references/1-task-functions.md
+        checked: 2026-10-23
+  - fact: Serverless compute has no Tesseract binary, so localization runs on a classic job cluster
+    used_in: [scripts/localize.py, scripts/databricks.yml, modules/06-localize.md, SKILL.md]
+    evidence:
+      - base_skill: databricks-serverless-migration
+        file: references/code-patterns.md
+        checked: 2026-10-23
+  - fact: Localization passes at a hit rate of 0.8
+    kind: heuristic                          # the advance-document-processing word-level design expects ~80% with OCR alone
+    used_in: [scripts/localize.py, modules/06-localize.md, SKILL.md, evals/scenarios.yaml]
+    evidence: []
+
+scenarios: evals/scenarios.yaml
