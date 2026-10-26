@@ -148,7 +148,7 @@ class FakeSpark:
         return SimpleNamespace(createOrReplaceTempView=lambda name: None)
 
     def sql(self, text: str) -> FakeQuery:
-        assert "failOnError => false" in text
+        assert "failOnError => false" in text and "responseFormat" not in text  # Claude rejects structured output
         return self.query
 
 

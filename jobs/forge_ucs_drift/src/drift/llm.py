@@ -83,7 +83,10 @@ def struct_fields(names: list[str]) -> tuple[str, str]:
 
 def ai_query(spark, model: str, prompts: list[str], max_tokens: int) -> list[tuple[str | None, str | None]]:
     """[(response, error)] for each prompt, in one batched query. failOnError => false keeps one bad row from
-    failing the batch. The struct's fields are checked on the query's schema, before any model is called."""
+    failing the batch. The struct's fields are checked on the query's schema, before any model is called.
+
+    No responseFormat: the system.ai Claude models reject structured output ("requires forced tool use, which
+    newer Anthropic models reject", 2026-10-26). The prompts ask for one JSON object, and parse_json finds it."""
     if not MODEL_RE.match(model):
         raise ValueError(f"model {model!r} isn't a system.ai model name")
     if not prompts:
@@ -92,7 +95,6 @@ def ai_query(spark, model: str, prompts: list[str], max_tokens: int) -> list[tup
     query = spark.sql(
         f"""SELECT id, ai_query('{model}', prompt,
                 failOnError => false,
-                responseFormat => '{{"type":"json_object"}}',
                 modelParameters => named_struct('max_tokens', {int(max_tokens)})) AS out
             FROM forge_drift_prompts"""
     )
