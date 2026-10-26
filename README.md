@@ -34,7 +34,9 @@ Each use-case skill provides:
    irm https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.ps1 | iex
    ```
 
-3. **Restart your agent**, then invoke `forge` and say what you want built:
+   For Genie Code, in a notebook or the Genie Code CLI, use the notebook installer instead (see [Genie Code](#genie-code)).
+
+3. **Restart your agent**, then invoke `forge` and say what you want built (in Genie Code, type `@forge`):
 
    ```
    /forge build a document Q&A agent over the PDFs in /Volumes/main/legal/contracts
@@ -117,6 +119,25 @@ Rerun the installer to update. Update only the base skills with `databricks aito
 
 **Without the installer:** put the base skills in your agent's skills directory with `databricks aitools install --path .claude/skills`, then `cp -R databricks-skill-forge/skills/* .claude/skills/`. The `--path` flag matters: without it, `aitools` installs a plugin instead of folders. Then check each use-case skill with `uv run .claude/skills/<skill>/scripts/check_base_skills.py`. This route doesn't set up the MCP server.
 
+### Genie Code
+
+[Genie Code](https://docs.databricks.com/aws/en/genie-code/skills) loads skills from workspace folders, so it has its own installer, the `install_genie_code` notebook:
+
+1. **Get the notebook into your workspace.** Download `install_genie_code.py` from the [latest release](https://github.com/bendoan-db/databricks-skill-forge/releases/latest) and import it into a workspace folder. Or clone this repository as a [Git folder](https://docs.databricks.com/aws/en/repos/) and open `install_genie_code` there, which installs that checkout's skills.
+2. **Run all** on serverless compute, or on Databricks Runtime 14.3 LTS or later. The compute needs outbound access to GitHub. With **Action** set to `plan`, the default, the notebook only shows what it would change.
+3. **Set Action to `install`**, and run all again.
+4. **Start a new Genie Code chat**, and type `@forge` and your request.
+
+The notebook installs into `/Users/<you>/.assistant/skills`, which only you see. Set **Install for** to `workspace` to install into `/.assistant/skills` for everyone instead, which takes admin rights on that folder. It installs two sets of skills:
+- **The base skills:** every stable databricks-agent-skills skill, at the newest tag a Forge skill is pinned to. They come from GitHub without a checksum check, and without their icon files, so every folder is text only.
+- **The Forge skills:** checked against the release's checksum.
+
+It skips the MLflow skills and the MCP server, because no Forge skill needs them, and Genie Code adds MCP servers in its own settings.
+
+**The Genie Code CLI** reads skills only from your computer. Copy what the notebook installed with `databricks workspace export-dir /Users/<you>/.assistant/skills ~/.genie/skills --overwrite --profile <profile>`. Or, for one project, run the local installer with `--tools codex --no-mcp`: it writes `.agents/skills/`, which the CLI also reads. The Forge scripts need `uv` on your computer.
+
+**Not yet tried in a notebook:** the use-case skills run their scripts with `uv run` and deploy with the `databricks` CLI. With the Genie Code CLI, both run on your computer. Genie Code in a notebook may have neither, so a build there can stop at those steps.
+
 ## Use
 
 Invoke `forge` and say what you want built, for example `/forge build a document Q&A agent over /Volumes/main/legal/contracts`. Type just `/forge` to see the use cases. A plain request without `/forge` ("build a chatbot over the PDFs in my volume") should still start in `forge`; the routing evals check that.
@@ -187,8 +208,10 @@ databricks-skill-forge/
 │   └── forge-structured-doc-extraction/   # same layout
 ├── docs/                  # maintainer notes; not part of any published skill
 ├── install.sh, install.ps1  # installers (macOS/Linux, Windows): base skills and MCP server through AI Dev Kit, then Forge
+├── install_genie_code.py  # Genie Code installer: a notebook that puts the base and Forge skills in a workspace skills folder
 ├── VERSION                # the release version; release tags are v<VERSION>
 ├── .github/workflows/     # tests on every pull request; a v* tag also builds and publishes the release
+├── jobs/forge_ucs_drift/  # daily Databricks job: proposes skill updates when the base skills change; not published
 ├── tools/                 # maintainer scripts (forge catalog generator, release builder); not published
 └── tests/                 # checks that run without a Databricks workspace
 ```
@@ -227,12 +250,22 @@ The workflow reruns the tests, then:
 
 The `releases/latest/download/…` links then point at the new version. Preview a build locally with `uv run tools/build_release.py v$(cat VERSION) --out /tmp/forge-release`.
 
+## Keeping skills current
+
+The base skills change every few days. `jobs/forge_ucs_drift` is a Databricks job that runs daily. It:
+- checks for a new [databricks-agent-skills](https://github.com/databricks/databricks-agent-skills) release;
+- works out which Forge skills read the files that changed;
+- asks a model whether each change matters;
+- opens one pull request per affected skill. A compatible change gets a pull request that moves the skill's pin; a material or breaking one gets an edit to the skill, checked with this repository's own tests.
+
+Nothing merges without review. It's starting in dry-run mode, which writes the pull requests' text to a volume instead of opening them. See [docs/drift-pipeline-design.md](docs/drift-pipeline-design.md).
+
 ## Roadmap
 
 Forge is in early development. The following are planned but not yet in this repository:
 
 - **Base skill refinement:** a Databricks workflow that refreshes the base skills monthly from release notes and documentation, with every change backed by a doc citation.
-- **Drift checks:** rerunning each use-case skill's scenarios when the base skills change, then opening a pull request (compatible change) or an issue (breaking change).
+- **Certification runs:** rerunning each use-case skill's end-to-end scenarios in a workspace, so drift pull requests can say a new pin is certified, not only statically checked.
 - **Use-case skill builder:** a skill that helps you combine base skills into your own use-case skill.
 - **Customer and domain skills:** context about your workspace and environment that tailors a use-case skill to it.
 - **Unity Catalog installer:** publishes the skills as governed Unity Catalog skills, so agents across your organization, including Genie Code, can use them.

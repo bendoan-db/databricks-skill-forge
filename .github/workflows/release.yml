@@ -1,6 +1,7 @@
 # Tests on every pull request and push to main. A v* tag (the VERSION file's semver, such as v0.1.0) also builds
 # the release with tools/build_release.py and publishes it, so the no-clone installers can download it:
-#   https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.sh (and install.ps1)
+#   https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.sh (and install.ps1,
+#   and the Genie Code notebook install_genie_code.py)
 name: Test and release
 
 on:
@@ -57,4 +58,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --title "Forge $GITHUB_REF_NAME" --notes-file dist/RELEASE_NOTES.md \
-            dist/install.sh dist/install.ps1 "dist/forge-skills-$GITHUB_REF_NAME.tar.gz" dist/SHA256SUMS
+            dist/install.sh dist/install.ps1 dist/install_genie_code.py "dist/forge-skills-$GITHUB_REF_NAME.tar.gz" \
+            dist/SHA256SUMS

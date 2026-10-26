@@ -9,8 +9,8 @@
 
 The tag must be the VERSION file's semver with a leading v. The archive holds skills/ only, built the same
 way every time (sorted entries, fixed timestamps and owners, no caches), so a commit always produces the
-same checksum. The installers get the tag and that checksum written in, which is how a downloaded
-installer finds and verifies its skills. Maintainer tool; .github/workflows/release.yml runs it on tag pushes.
+same checksum. The installers, and the Genie Code notebook, get the tag and that checksum written in, which
+is how a downloaded installer finds and verifies its skills. Maintainer tool; .github/workflows/release.yml runs it on tag pushes.
 """
 
 import argparse
@@ -33,6 +33,8 @@ STAMPS = {
                    (r'(?m)^FORGE_SKILLS_SHA256=""', 'FORGE_SKILLS_SHA256="{sha}"')],
     "install.ps1": [(r"(?m)^\$ForgeVersion = ''", "$ForgeVersion = '{tag}'"),
                     (r"(?m)^\$ForgeSkillsSha256 = ''", "$ForgeSkillsSha256 = '{sha}'")],
+    "install_genie_code.py": [(r'(?m)^FORGE_VERSION = ""', 'FORGE_VERSION = "{tag}"'),
+                              (r'(?m)^FORGE_SKILLS_SHA256 = ""', 'FORGE_SKILLS_SHA256 = "{sha}"')],
 }
 REPO = "bendoan-db/databricks-skill-forge"
 
@@ -118,6 +120,9 @@ irm {base}/install.ps1 | iex
 Both install every stable Databricks base skill and the Databricks MCP server through AI Dev Kit {ai_dev_kit_pin(root)},
 then the skills below. The installers verify each download against a checksum before installing anything.
 Run either with `--help` for options.
+
+Genie Code: import {base}/install_genie_code.py into your workspace as a notebook, and run it. It puts the base
+skills and the skills below in your Genie Code skills folder.
 
 ## Skills
 

@@ -1,6 +1,6 @@
 # Installer design notes
 
-Maintainer notes for `install.sh` (macOS and Linux) and `install.ps1` (Windows), and for how releases are built. They install the base skills and the Databricks MCP server through [AI Dev Kit](https://github.com/databricks-solutions/ai-dev-kit), and then the Forge skills. Nothing here is published with any skill.
+Maintainer notes for `install.sh` (macOS and Linux) and `install.ps1` (Windows), for the Genie Code notebook `install_genie_code.py`, and for how releases are built. The shell installers install the base skills and the Databricks MCP server through [AI Dev Kit](https://github.com/databricks-solutions/ai-dev-kit), and then the Forge skills. Nothing here is published with any skill.
 
 ## Where the Forge skills come from
 
@@ -19,7 +19,7 @@ A downloaded release installer always installs its own release, even when it's r
 
 `tools/build_release.py <tag>` writes `dist/`:
 - **`forge-skills-<tag>.tar.gz`:** `skills/` only, under a `forge-skills/` folder.
-- **`install.sh` and `install.ps1`:** the tag and the archive's SHA-256 written into the `FORGE_VERSION`/`FORGE_SKILLS_SHA256` lines (`$ForgeVersion`/`$ForgeSkillsSha256` in PowerShell). Each pattern must match exactly once, so an already-stamped file or a renamed line fails the build.
+- **`install.sh`, `install.ps1`, and `install_genie_code.py`:** the tag and the archive's SHA-256 written into the `FORGE_VERSION`/`FORGE_SKILLS_SHA256` lines (`$ForgeVersion`/`$ForgeSkillsSha256` in PowerShell). Each pattern must match exactly once, so an already-stamped file or a renamed line fails the build.
 - **`SHA256SUMS`** and **`RELEASE_NOTES.md`**, which carries the install one-liners pinned to the tag, and each skill's version.
 
 **The archive is reproducible.** Entries are sorted, timestamps are fixed at 1980-01-01, owners are 0, permissions are normalized to 644 or 755 (only the execute bit is kept), the gzip header has no timestamp, and caches are left out. So a commit always produces the same checksum, and `tests/test_release_build.py` builds twice and compares.
@@ -82,6 +82,23 @@ with `DEVKIT_SCOPE=<scope>`, from the project directory. Then `databricks-mcp-se
 - **`tar`.** It uses `%SystemRoot%\System32\tar.exe` when there is one, because Git for Windows' `tar`, if it comes first on `PATH`, reads `C:\` paths as remote hosts.
 - **Child installers.** AI Dev Kit's installers run in the same PowerShell edition as the installer itself, with `-ExecutionPolicy Bypass`.
 
+## The Genie Code notebook
+
+Genie Code in the workspace loads skills from `/Users/<user>/.assistant/skills`, `/.assistant/skills`, and folders added in its settings ([docs](https://docs.databricks.com/aws/en/genie-code/skills)). The Genie Code CLI (Beta) loads them only from local folders: `~/.genie/skills`, and a project's `.agents/skills` ([docs](https://docs.databricks.com/aws/en/genie-code/genie-code-cli)). Neither has an installer for skill folders, and the shell installers can't write to the workspace, so `install_genie_code.py`, a notebook in source format, does it.
+
+- **Forge sources:** the same order as the shell installers: a Forge ref; the stamped release, checked against its checksum; the checkout, when the notebook runs from a Git folder (its working directory has `skills/forge/SKILL.md`); otherwise `main`, unverified.
+- **Base skills come from the upstream archive, not AI Dev Kit.** A notebook has no `databricks` CLI or terminal. So the notebook downloads databricks-agent-skills' GitHub source archive and takes `skills/` (the stable skills; `experimental/` is left out).
+  - **The tag** is the newest `upstream` pin among the Forge skills, not the latest release. The skills were written against it, and the drift job moves the pins, so the notebook follows them without a pin of its own.
+  - **The archive isn't checksum-verified,** because its tag is chosen at run time. That's the same trust the shell installers give `databricks aitools`.
+- **Text only.** Files that aren't UTF-8 text are left out (in v0.2.34, one PNG icon per base skill, for plugin listings), so every folder meets the text-only limit `tests/test_skills.py` holds Forge's own skills to. Genie Code's docs don't state limits.
+- **Checked before anything is written.** Everything is staged in a temporary folder, and each `check_base_skills.py` runs against the stage. The workspace folder is written only after that passes, and the check runs again on the installed copy.
+- **Plan by default.** The Action widget defaults to `plan`, the notebook's version of the shell installers' one confirmation. A folder with the same name as an incoming skill is replaced whole, and the plan names each one. Other skills in the folder are left alone. The plan warns when the other Genie Code folder (user or workspace) already has some of these skills, since Genie Code loads both.
+- **Writes go through `/Workspace`,** one file at a time, without copying permissions or times. That's why it needs serverless compute or Databricks Runtime 14.3 LTS or later: those support writing workspace files, and run a notebook in its own folder, which is how it finds a checkout.
+- **Downloads** are `https://` only (`file://` for mirrors and tests), and so are redirects. `FORGE_RELEASE_URL`, `FORGE_ARCHIVE_URL`, and `FORGE_BASE_ARCHIVE_URL` point it at a mirror.
+- **No MLflow skills and no MCP server.** No Forge skill loads either, and Genie Code adds MCP servers in its settings only.
+- **The CLI.** The notebook prints a `databricks workspace export-dir` command that copies the install to `~/.genie/skills`. The CLI also ships Databricks skills in `~/.genie/skills/.system/`. Forge needs its base skills as siblings, so the copies stay.
+- **Tests** (`tests/test_installer_notebook.py`) import the notebook, with a local folder standing in for `/Workspace` and `file://` mirrors for GitHub. All `dbutils` and `spark` calls are in the last cell, which runs only where `dbutils` is defined.
+
 ## Not yet verified
 
 - A real install end to end, on any OS. The tests use stand-ins for `databricks`, `uv`, and AI Dev Kit, and the bash installer has only been dry-run against a real CLI (v1.20.0, agent skills 0.2.30).
@@ -89,3 +106,10 @@ with `DEVKIT_SCOPE=<scope>`, from the project directory. Then `databricks-mcp-se
 - A real release. No `v*` tag has been pushed, so `releases/latest/download/…` returns 404 until the first one.
 - That `databricks aitools update` keeps the named folders current after an install.
 - `mcp_install.sh` and `mcp_install.ps1` with `--silent` and no terminal.
+- The Genie Code notebook in a workspace:
+  - writing `.assistant` folders through `/Workspace` on serverless;
+  - egress to GitHub from serverless;
+  - importing the release's `install_genie_code.py` as a notebook.
+- How Genie Code treats two skills with the same name: a base skill in both the user and workspace folders, or next to the CLI's `.system` copy.
+- `databricks workspace export-dir` with these files and `--overwrite`. It doesn't remove files that a newer version dropped.
+- Whether the use-case workflows run in Genie Code in a notebook, since their modules run scripts with `uv run` and deploy with the `databricks` CLI.
