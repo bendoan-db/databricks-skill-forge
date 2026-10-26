@@ -245,7 +245,7 @@ The end-to-end scenarios in each `evals/scenarios.yaml` need a Databricks worksp
 2. Tag and push: `git tag v$(cat VERSION) && git push origin v$(cat VERSION)`.
 
 The workflow reruns the tests, then:
-- builds the release with `tools/build_release.py`: the skills archive, the two installers with the version and the archive's checksum written into them, `SHA256SUMS`, and the release notes;
+- builds the release with `tools/build_release.py`: the skills archive, the two installers and the Genie Code notebook with the version and the archive's checksum written into them, `SHA256SUMS`, and the release notes;
 - publishes them as a GitHub release.
 
 The `releases/latest/download/…` links then point at the new version. Preview a build locally with `uv run tools/build_release.py v$(cat VERSION) --out /tmp/forge-release`.
