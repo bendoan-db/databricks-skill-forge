@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from conftest import SKILLS, SKILLS_DIR, run_script
+from conftest import SKILLS, SKILLS_DIR, load_script, run_script
 
 
 def manifest(skill: str) -> dict:
@@ -64,7 +64,17 @@ def test_check_base_skills(skill: str, tmp_path: Path):
         meta = "" if dep["version"] == "unversioned" else f'metadata:\n  version: "{dep["version"]}"\n'
         (tmp_path / dep["name"]).mkdir(exist_ok=True)
         (tmp_path / dep["name"] / "SKILL.md").write_text(f"---\nname: {dep['name']}\ndescription: x\n{meta}---\n")
+    check = load_script(skill, "check_base_skills")
+    cited = sorted({pair for module in ucs["modules"] for pair in check.cited_files((SKILLS_DIR / skill / module["file"]).read_text())})
+    for base, ref in cited:
+        (tmp_path / base / ref).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / base / ref).write_text("reference\n")
     run_script(skill, "check_base_skills.py", "--skills-dir", str(tmp_path))
+    if cited:  # a cited reference file that disappears blocks, like a missing skill
+        (tmp_path / cited[0][0] / cited[0][1]).unlink()
+        result = run_script(skill, "check_base_skills.py", "--skills-dir", str(tmp_path), check=False)
+        assert result.returncode == 1 and f"{cited[0][0]}/{cited[0][1]}" in result.stderr
+        (tmp_path / cited[0][0] / cited[0][1]).write_text("reference\n")
     (tmp_path / "databricks-core" / "SKILL.md").unlink()
     result = run_script(skill, "check_base_skills.py", "--skills-dir", str(tmp_path), check=False)
     assert result.returncode == 1 and "databricks-core" in result.stderr

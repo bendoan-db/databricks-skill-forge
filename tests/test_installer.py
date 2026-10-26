@@ -17,7 +17,8 @@ import tarfile
 from pathlib import Path
 
 import pytest
-from conftest import SKILLS, SKILLS_DIR
+import yaml
+from conftest import SKILLS, SKILLS_DIR, load_script
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="install.sh is for macOS and Linux; install.ps1 is tested on Windows")
 INSTALLER = SKILLS_DIR.parent / "install.sh"
@@ -40,12 +41,27 @@ for tool in $(echo "$tools" | tr ',' ' '); do
   for s in $(echo "$skills" | tr ',' ' '); do
     mkdir -p "$dir/$s" && printf -- '---\\nname: %s\\ndescription: x\\nmetadata:\\n  version: "9.9.9"\\n---\\n' "$s" > "$dir/$s/SKILL.md"
   done
+  while read -r s ref; do  # the reference files the Forge modules cite
+    case ",$skills," in *",$s,"*) mkdir -p "$dir/$s/${{ref%/*}}" && echo reference > "$dir/$s/$ref" ;; esac
+  done < "$FAKE_REFS"
 done
 """
 FAKE_MCP_INSTALL = """#!/usr/bin/env bash
 printf '%s\\n' "$PWD" "$DEVKIT_SCOPE" "$*" > "$FAKE_LOG/mcp_install"
 """
 PINNED = "v0.2.0"
+
+
+def cited_references(tmp_path: Path) -> Path:
+    """A file of "<base skill> <reference file>" lines: every file the Forge modules' Load lines cite."""
+    check = load_script(SKILLS[0], "check_base_skills")
+    pairs = set()
+    for skill in SKILLS:
+        for module in yaml.safe_load((SKILLS_DIR / skill / "ucs.yaml").read_text())["modules"]:
+            pairs |= check.cited_files((SKILLS_DIR / skill / module["file"]).read_text())
+    path = tmp_path / "references.txt"
+    path.write_text("".join(f"{s} {ref}\n" for s, ref in sorted(pairs)))
+    return path
 
 
 def write_exe(path: Path, text: str) -> None:
@@ -80,13 +96,14 @@ esac
     aidk = tmp_path / "ai-dev-kit"
     write_exe(aidk / "install.sh", FAKE_AIDK_INSTALL)
     write_exe(aidk / "databricks-mcp-server" / "mcp_install.sh", FAKE_MCP_INSTALL)
+    refs = cited_references(tmp_path)
     home = tmp_path / "home"
     home.mkdir()
     (home / ".databrickscfg").write_text("[DEFAULT]\nhost = https://example.cloud.databricks.com\n")
     project = tmp_path / "project"
     project.mkdir()
     return {
-        "vars": {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(home), "FAKE_LOG": str(log),
+        "vars": {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(home), "FAKE_LOG": str(log), "FAKE_REFS": str(refs),
                  "FORGE_AIDEVKIT_DIR": str(aidk), "PYTHONDONTWRITEBYTECODE": "1"},
         "log": log, "project": project, "home": home, "listing": tmp_path / "aitools.json", "tmp": tmp_path,
     }

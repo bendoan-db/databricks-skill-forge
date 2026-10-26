@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from conftest import SKILLS, SKILLS_DIR
+from test_installer import cited_references
 
 ROOT = SKILLS_DIR.parent
 INSTALLER = ROOT / "install.ps1"
@@ -43,6 +44,14 @@ foreach ($tool in ($tools -split ',')) {
         $path = Join-Path (Join-Path (Join-Path (Get-Location).Path $dir) 'skills') $s
         New-Item -ItemType Directory -Path $path -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $path 'SKILL.md') -Value "---`nname: $s`ndescription: x`nmetadata:`n  version: `"9.9.9`"`n---"
+    }
+    foreach ($line in Get-Content -LiteralPath $env:FAKE_REFS) {  # the reference files the Forge modules cite
+        $s, $ref = $line -split ' ', 2
+        if (($skills -split ',') -contains $s) {
+            $file = Join-Path (Join-Path (Join-Path (Join-Path (Get-Location).Path $dir) 'skills') $s) $ref
+            New-Item -ItemType Directory -Path (Split-Path $file) -Force | Out-Null
+            Set-Content -LiteralPath $file -Value 'reference'
+        }
     }
 }
 exit 0
@@ -94,6 +103,7 @@ def env(tmp_path: Path) -> dict:
     (home / ".databrickscfg").write_text("[DEFAULT]\nhost = https://example.cloud.databricks.com\n")
     variables = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(home),
                  "USERPROFILE": str(home), "FAKE_LOG": str(log), "FORGE_AIDEVKIT_DIR": str(aidk),
+                 "FAKE_REFS": str(cited_references(tmp_path)),
                  "PYTHONDONTWRITEBYTECODE": "1"}
     variables.pop("DATABRICKS_CONFIG_PROFILE", None)
     variables.pop("DATABRICKS_CONFIG_FILE", None)
