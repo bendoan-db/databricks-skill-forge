@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Install Forge: the Databricks base skills and the Databricks MCP server (through AI Dev Kit), then the
-# Forge skills in the same skills directories.
+# Forge skills in the same skills directories. No clone needed:
 #
-#   ./install.sh                               # this project, for Claude Code
-#   ./install.sh --global --tools claude,codex # your user, for Claude Code and Codex
-#   ./install.sh --forge-only                  # update only the Forge skills
-#   ./install.sh --dry-run                     # print the plan, change nothing
+#   bash <(curl -fsSL https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.sh)
 #
-# Runs on macOS's bash 3.2. See ./install.sh --help for every option.
+# From a checkout, ./install.sh installs the checkout's skills. Options: ./install.sh --help.
+# Runs on macOS's bash 3.2.
 set -euo pipefail
 
-AIDEVKIT_REPO="${FORGE_AIDEVKIT_REPO:-https://github.com/databricks-solutions/ai-dev-kit.git}"
+FORGE_VERSION=""                          # release tag; tools/build_release.py stamps it (empty in a checkout)
+FORGE_SKILLS_SHA256=""                    # SHA-256 of that release's forge-skills archive; stamped with it
+FORGE_GITHUB="bendoan-db/databricks-skill-forge"
+FORGE_RELEASE_URL="${FORGE_RELEASE_URL:-https://github.com/$FORGE_GITHUB/releases/download}"
+FORGE_ARCHIVE_URL="${FORGE_ARCHIVE_URL:-https://codeload.github.com/$FORGE_GITHUB/tar.gz}"
 AIDEVKIT_REF="v0.2.0"                     # the AI Dev Kit release this installer was written against
-FORGE_REPO="${FORGE_REPO:-https://github.com/bendoan-db/databricks-skill-forge.git}"
-FORGE_REF="main"
+AIDEVKIT_SHA256="d27b7c634be3f5080157365de373b9f9261af7de0236f532311b4ac791fa4ce0"  # its GitHub source archive
+AIDEVKIT_ARCHIVE_URL="${FORGE_AIDEVKIT_ARCHIVE_URL:-https://codeload.github.com/databricks-solutions/ai-dev-kit/tar.gz}"
 FORGE_HOME="${FORGE_HOME:-$HOME/.databricks-skill-forge}"
 MIN_CLI_VERSION="1.11.0"                  # the Forge skills' own floor; AI Dev Kit checks its per-agent floors
 KNOWN_TOOLS="claude codex copilot cursor gemini antigravity opencode kiro windsurf"
@@ -26,8 +28,10 @@ TOOLS="claude"
 PROFILE="${DATABRICKS_CONFIG_PROFILE:-DEFAULT}"
 INSTALL_MCP=true
 FORGE_ONLY=false
+FORGE_REF=""
 DRY_RUN=false
 ASSUME_YES=false
+AIDEVKIT_PINNED="$AIDEVKIT_REF"
 
 if [ -t 1 ]; then B='\033[1m'; G='\033[32m'; Y='\033[33m'; R='\033[31m'; N='\033[0m'; else B=''; G=''; Y=''; R=''; N=''; fi
 step() { printf '\n%b%s%b\n' "$B" "$*" "$N"; }
@@ -52,15 +56,18 @@ Usage: install.sh [options]
   -p, --profile NAME       Databricks CLI profile for the MCP server (default: DEFAULT)
       --no-mcp             Skip the Databricks MCP server
       --forge-only         Skip AI Dev Kit; install or update only the Forge skills
-      --ai-dev-kit-ref REF AI Dev Kit tag or branch (default: $AIDEVKIT_REF)
-      --forge-ref REF      Forge tag or branch, when not run from a checkout (default: $FORGE_REF)
+      --ai-dev-kit-ref REF Another AI Dev Kit tag or branch (default: $AIDEVKIT_REF; others aren't checksum-verified)
+      --forge-ref REF      Install the Forge skills from this branch or tag's source, unverified (for development)
       --dry-run            Print the plan and change nothing
   -y, --yes                Don't ask for confirmation
+  -v, --version            Print the installer's version
   -h, --help               Show this help
 
 Environment:
-  FORGE_HOME          Where the AI Dev Kit checkout lives; the MCP server runs from it (default: ~/.databricks-skill-forge)
-  FORGE_AIDEVKIT_DIR  Use this AI Dev Kit checkout as is, instead of cloning one
+  FORGE_HOME          Where the AI Dev Kit copy the MCP server runs from lives (default: ~/.databricks-skill-forge)
+  FORGE_AIDEVKIT_DIR  Use this AI Dev Kit checkout as is, instead of downloading one
+  FORGE_RELEASE_URL, FORGE_ARCHIVE_URL, FORGE_AIDEVKIT_ARCHIVE_URL, FORGE_AIDEVKIT_SHA256
+                      Download from a mirror instead of GitHub
 EOF
 }
 
@@ -76,6 +83,7 @@ while [ $# -gt 0 ]; do
         --forge-ref)      [ $# -ge 2 ] || die "$1 needs a value"; FORGE_REF="$2"; shift 2 ;;
         --dry-run)        DRY_RUN=true; shift ;;
         -y|--yes)         ASSUME_YES=true; shift ;;
+        -v|--version)     echo "Forge installer ${FORGE_VERSION:-(development checkout)}, AI Dev Kit $AIDEVKIT_REF"; exit 0 ;;
         -h|--help)        usage; exit 0 ;;
         *)                die "Unknown option: $1 (see --help)" ;;
     esac
@@ -92,6 +100,12 @@ else
     [ -d "$BASE_DIR" ] || die "Project directory not found: $BASE_DIR"
     BASE_DIR="$(cd "$BASE_DIR" && pwd)"
 fi
+# Only the pinned release has a known checksum (a mirror can supply its own).
+if [ -n "${FORGE_AIDEVKIT_SHA256:-}" ]; then
+    AIDEVKIT_SHA256="$FORGE_AIDEVKIT_SHA256"
+elif [ "$AIDEVKIT_REF" != "$AIDEVKIT_PINNED" ]; then
+    AIDEVKIT_SHA256=""
+fi
 
 # version_gte 1.20.0 1.11.0
 version_gte() {
@@ -104,6 +118,37 @@ version_gte() {
         [ "${have[$i]:-0}" -lt "${want[$i]:-0}" ] && return 1
     done
     return 0
+}
+
+# download URL DEST: https only (file:// for local mirrors and tests); fails on any HTTP error.
+download() {
+    case $1 in
+        https://*) curl -fsSL --proto '=https' --tlsv1.2 --retry 2 -o "$2" "$1" ;;
+        file://*)  curl -fsSL -o "$2" "$1" ;;
+        *)         die "Refusing to download from $1: use an https:// URL" ;;
+    esac
+}
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+# verify FILE EXPECTED WHAT: stop before anything is installed when a download doesn't match.
+verify() {
+    local actual
+    actual="$(sha256_of "$1")"
+    [ "$actual" = "$2" ] || die "The $3 archive doesn't match its checksum (expected $2, got $actual). Nothing was installed."
+}
+
+# fetch_archive URL DEST_DIR WHAT [SHA256]: download a .tar.gz, verify it when a checksum is given, unpack
+# its single top-level folder into DEST_DIR.
+fetch_archive() {
+    local archive="$WORK_DIR/download.tar.gz"
+    download "$1" "$archive" || die "Couldn't download $3 from $1"
+    [ -z "${4:-}" ] || verify "$archive" "$4" "$3"
+    rm -rf "$2" && mkdir -p "$2"
+    tar -xzf "$archive" --strip-components 1 -C "$2" || die "Couldn't unpack $3"
+    rm -f "$archive"
 }
 
 # Skills directory for one agent. Same paths as AI Dev Kit, so Forge lands next to the base skills.
@@ -156,9 +201,10 @@ elif [ "$DRY_RUN" = true ]; then
 else
     die "uv isn't installed; Forge's scripts and the MCP server need it: https://docs.astral.sh/uv/"
 fi
-if [ "$FORGE_ONLY" = false ] && [ -z "${FORGE_AIDEVKIT_DIR:-}" ]; then
-    command -v git >/dev/null 2>&1 || die "git isn't installed; it's needed to fetch AI Dev Kit"
-fi
+for tool in curl tar; do
+    command -v "$tool" >/dev/null 2>&1 || die "$tool isn't installed; it's needed to download and unpack the skills"
+done
+command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || die "Neither sha256sum nor shasum is installed; one is needed to verify downloads"
 cfg="${DATABRICKS_CONFIG_FILE:-$HOME/.databrickscfg}"
 if [ -f "$cfg" ] && grep -q "^\[$PROFILE\]" "$cfg"; then
     ok "Databricks profile $PROFILE"
@@ -166,16 +212,27 @@ else
     warn "Profile '$PROFILE' isn't in $cfg yet. Create it later with: databricks auth login --profile $PROFILE"
 fi
 
-# ─── Forge skills: this checkout, or a fresh clone ──────────────────────────────
+# ─── Forge skills: a release, this checkout, or a source archive ─────────────────
+# Downloads are verified (when they can be) before anything else happens.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/skills/forge/SKILL.md" ]; then
+if [ -n "$FORGE_REF" ]; then
+    fetch_archive "$FORGE_ARCHIVE_URL/$FORGE_REF" "$WORK_DIR/forge-source" "Forge $FORGE_REF source"
+    FORGE_SKILLS="$WORK_DIR/forge-source/skills"
+    FORGE_SOURCE="the $FORGE_REF source, unverified (--forge-ref)"
+elif [ -n "$FORGE_VERSION" ]; then
+    fetch_archive "$FORGE_RELEASE_URL/$FORGE_VERSION/forge-skills-$FORGE_VERSION.tar.gz" "$WORK_DIR/forge-skills" \
+        "Forge $FORGE_VERSION skills" "$FORGE_SKILLS_SHA256"
+    FORGE_SKILLS="$WORK_DIR/forge-skills"
+    FORGE_SOURCE="release $FORGE_VERSION, checksum verified"
+elif [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/skills/forge/SKILL.md" ]; then
     FORGE_SKILLS="$SCRIPT_DIR/skills"
-    FORGE_SOURCE="$SCRIPT_DIR"
+    FORGE_SOURCE="the checkout in $SCRIPT_DIR"
 else
-    command -v git >/dev/null 2>&1 || die "git isn't installed; it's needed to fetch the Forge skills"
-    git clone -q --depth 1 --branch "$FORGE_REF" "$FORGE_REPO" "$WORK_DIR/forge" || die "Couldn't clone $FORGE_REPO at $FORGE_REF"
-    FORGE_SKILLS="$WORK_DIR/forge/skills"
-    FORGE_SOURCE="$FORGE_REPO@$FORGE_REF"
+    warn "This installer isn't from a release, so it installs the main branch, unverified. For a release:"
+    warn "bash <(curl -fsSL https://github.com/$FORGE_GITHUB/releases/latest/download/install.sh)"
+    fetch_archive "$FORGE_ARCHIVE_URL/main" "$WORK_DIR/forge-source" "Forge main source"
+    FORGE_SKILLS="$WORK_DIR/forge-source/skills"
+    FORGE_SOURCE="the main source, unverified"
 fi
 FORGE_NAMES=""
 USE_CASE_NAMES=""
@@ -210,8 +267,16 @@ if [ "$FORGE_ONLY" = false ]; then
     [ -z "$missing" ] || die "Databricks agent skills ${BASE_RELEASE:-?} lack the base skills Forge needs:$missing. Upgrade the Databricks CLI."
 fi
 
+# The MCP server runs from a persistent AI Dev Kit copy; a skills-only install uses a throwaway one.
+if [ -n "${FORGE_AIDEVKIT_DIR:-}" ]; then
+    AIDK_DIR="$FORGE_AIDEVKIT_DIR"
+elif [ "$INSTALL_MCP" = true ]; then
+    AIDK_DIR="$FORGE_HOME/ai-dev-kit"
+else
+    AIDK_DIR="$WORK_DIR/ai-dev-kit"
+fi
+
 # ─── Plan ────────────────────────────────────────────────────────────────────────
-AIDK_DIR="${FORGE_AIDEVKIT_DIR:-$FORGE_HOME/ai-dev-kit}"
 step "Plan"
 msg "Scope:        $SCOPE ($BASE_DIR)"
 msg "Agents:       $TOOLS_CSV"
@@ -219,7 +284,13 @@ msg "Skills dirs:  $(skill_dirs | tr '\n' ' ')"
 if [ "$FORGE_ONLY" = true ]; then
     msg "AI Dev Kit:   skipped (--forge-only); the base skills must already be installed"
 else
-    msg "AI Dev Kit:   $AIDEVKIT_REF in $AIDK_DIR"
+    if [ -n "${FORGE_AIDEVKIT_DIR:-}" ]; then
+        msg "AI Dev Kit:   the copy in $AIDK_DIR"
+    elif [ -n "$AIDEVKIT_SHA256" ]; then
+        msg "AI Dev Kit:   $AIDEVKIT_REF, checksum pinned, in $AIDK_DIR"
+    else
+        msg "AI Dev Kit:   $AIDEVKIT_REF, unverified (only $AIDEVKIT_PINNED has a pinned checksum), in $AIDK_DIR"
+    fi
     msg "Base skills:  $(echo "$STABLE_BASE" | wc -w | tr -d ' ') stable skills from databricks-agent-skills ${BASE_RELEASE:+$BASE_RELEASE }as folders, plus the MLflow skills"
     if [ "$INSTALL_MCP" = true ]; then
         msg "MCP server:   Databricks MCP server for $TOOLS_CSV, profile $PROFILE"
@@ -263,19 +334,31 @@ aidk_scope_flag=""
 # ─── 1. AI Dev Kit: base skills and MCP server ───────────────────────────────────
 if [ "$FORGE_ONLY" = false ]; then
     step "AI Dev Kit $AIDEVKIT_REF"
+    AIDK_PREVIOUS=""
+    # Put back the copy an existing MCP server runs from, when this run can't finish replacing it.
+    restore_previous_aidk() {
+        [ -n "$AIDK_PREVIOUS" ] || return 0
+        rm -rf "$AIDK_DIR" && mv "$AIDK_PREVIOUS" "$AIDK_DIR"
+        AIDK_PREVIOUS=""
+    }
+    stamp="$AIDEVKIT_REF ${AIDEVKIT_SHA256:-unverified}"
     if [ -n "${FORGE_AIDEVKIT_DIR:-}" ]; then
         [ -f "$AIDK_DIR/install.sh" ] || die "FORGE_AIDEVKIT_DIR=$AIDK_DIR has no install.sh"
-        ok "Using the checkout in $AIDK_DIR"
-    elif [ -d "$AIDK_DIR/.git" ]; then
-        git -C "$AIDK_DIR" fetch -q --depth 1 origin "$AIDEVKIT_REF" || die "Couldn't fetch AI Dev Kit $AIDEVKIT_REF"
-        git -C "$AIDK_DIR" checkout -q --force FETCH_HEAD
-        ok "Updated $AIDK_DIR to $AIDEVKIT_REF"
-    elif [ -e "$AIDK_DIR" ]; then
-        die "$AIDK_DIR exists but isn't a git checkout. Move it aside, or set FORGE_AIDEVKIT_DIR to a checkout."
+        ok "Using the copy in $AIDK_DIR"
+    elif [ -n "$AIDEVKIT_SHA256" ] && [ "$(cat "$AIDK_DIR/.forge-source" 2>/dev/null || true)" = "$stamp" ]; then
+        ok "Already have $AIDEVKIT_REF in $AIDK_DIR"
     else
-        mkdir -p "$(dirname "$AIDK_DIR")"
-        git clone -q --depth 1 --branch "$AIDEVKIT_REF" "$AIDEVKIT_REPO" "$AIDK_DIR" || die "Couldn't clone AI Dev Kit $AIDEVKIT_REF"
-        ok "Cloned AI Dev Kit into $AIDK_DIR"
+        # Unpack next to the current copy, then swap, so a failed MCP install can put the old one back.
+        fetch_archive "$AIDEVKIT_ARCHIVE_URL/$AIDEVKIT_REF" "$AIDK_DIR.new" "AI Dev Kit $AIDEVKIT_REF" "$AIDEVKIT_SHA256"
+        [ -f "$AIDK_DIR.new/install.sh" ] || die "The AI Dev Kit $AIDEVKIT_REF archive has no install.sh"
+        echo "$stamp" > "$AIDK_DIR.new/.forge-source"
+        if [ -e "$AIDK_DIR" ]; then
+            rm -rf "$AIDK_DIR.old"
+            mv "$AIDK_DIR" "$AIDK_DIR.old"
+            AIDK_PREVIOUS="$AIDK_DIR.old"
+        fi
+        mv "$AIDK_DIR.new" "$AIDK_DIR"
+        ok "Downloaded AI Dev Kit $AIDEVKIT_REF${AIDEVKIT_SHA256:+ (checksum verified)}"
     fi
 
     mlflow_skills="$(sed -n 's/^MLFLOW_SKILLS="\(.*\)"$/\1/p' "$AIDK_DIR/install.sh" | head -1)"
@@ -285,9 +368,11 @@ if [ "$FORGE_ONLY" = false ]; then
     msg "Installing $(echo "$skills_csv" | tr ',' '\n' | wc -l | tr -d ' ') skills for $TOOLS_CSV (through databricks aitools)..."
     # --silent skips AI Dev Kit's own prompts (this script already confirmed); --force reapplies the named set.
     # shellcheck disable=SC2086  # the scope flag is empty or one word
-    (cd "$BASE_DIR" && DEVKIT_SCOPE="$SCOPE" bash "$AIDK_DIR/install.sh" --tools "$TOOLS_CSV" -p "$PROFILE" \
-        --skills "$skills_csv" --experimental false --force --silent $aidk_scope_flag) \
-        || die "AI Dev Kit couldn't install the base skills (see its output above)"
+    if ! (cd "$BASE_DIR" && DEVKIT_SCOPE="$SCOPE" bash "$AIDK_DIR/install.sh" --tools "$TOOLS_CSV" -p "$PROFILE" \
+        --skills "$skills_csv" --experimental false --force --silent $aidk_scope_flag); then
+        restore_previous_aidk
+        die "AI Dev Kit couldn't install the base skills (see its output above)"
+    fi
     ok "Base skills installed; manage them with: databricks aitools list|update"
 
     if [ "$INSTALL_MCP" = true ]; then
@@ -296,6 +381,10 @@ if [ "$FORGE_ONLY" = false ]; then
         if (cd "$BASE_DIR" && DEVKIT_SCOPE="$SCOPE" bash "$AIDK_DIR/databricks-mcp-server/mcp_install.sh" \
             --tools "$TOOLS_CSV" -p "$PROFILE" --silent $aidk_scope_flag); then
             ok "Databricks MCP server registered for $TOOLS_CSV (it runs from $AIDK_DIR)"
+            [ -z "$AIDK_PREVIOUS" ] || rm -rf "$AIDK_PREVIOUS"
+        elif [ -n "$AIDK_PREVIOUS" ]; then
+            restore_previous_aidk
+            warn "The MCP server didn't install, so the previous AI Dev Kit copy it ran from was put back."
         else
             warn "The MCP server didn't install. The skills don't need it; retry with: bash $AIDK_DIR/databricks-mcp-server/mcp_install.sh"
         fi

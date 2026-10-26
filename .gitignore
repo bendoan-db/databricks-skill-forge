@@ -13,6 +13,9 @@ venv/
 .env.*
 .databrickscfg
 
+# Release builds (tools/build_release.py)
+/dist/
+
 # Databricks CLI bundle state (created by `databricks bundle deploy`)
 .databricks/
 

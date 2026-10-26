@@ -14,6 +14,38 @@ Each use-case skill provides:
 - **Guardrails**: the agent asks before anything billable or shared, and never deletes a resource without confirmation that names it.
 - **Evaluation thresholds** that define "done".
 
+## How to Run
+
+1. **Sign in to your workspace** with the Databricks CLI, and make sure `uv` is installed (see [Requirements](#requirements)):
+
+   ```bash
+   databricks auth login --host https://<your-workspace>.cloud.databricks.com --profile DEFAULT
+   ```
+
+2. **Install** the base skills, the Databricks MCP server, and the Forge skills. Run this in the project folder where you use your agent; there's nothing to clone (see [Install](#install) for other agents and options):
+
+   ```bash
+   bash <(curl -fsSL https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.sh)
+   ```
+
+   On Windows, in PowerShell:
+
+   ```powershell
+   irm https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.ps1 | iex
+   ```
+
+3. **Restart your agent**, then invoke `forge` and say what you want built:
+
+   ```
+   /forge build a document Q&A agent over the PDFs in /Volumes/main/legal/contracts
+   /forge build a search index over /Volumes/main/hr/policies that our app can query
+   /forge pull the invoice number, vendor, and total from /Volumes/main/ap/invoices into tables
+   ```
+
+   Type just `/forge` to see the use cases.
+
+4. **Answer the agent's questions.** `forge` tells you which use case it picked, and that skill asks for what it needs, such as where the documents are and which AI Search endpoint to use. It asks before anything billable or shared, and shows you results at each step. Its progress is saved in the project folder, so you can run `/forge` there again later to pick up where you left off.
+
 ## Available skills
 
 | Skill | Version | What it builds |
@@ -28,8 +60,8 @@ Each use-case skill provides:
 ## Requirements
 
 - Databricks CLI v1.11.0 or later, with an authenticated profile. The installer was tested with v1.20.0. Some agents need newer versions for AI Dev Kit to target them: Gemini CLI needs v1.12.0, and Kiro needs v1.20.0.
-- git, to fetch AI Dev Kit.
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+- macOS or Linux with `bash`, `curl`, and `tar`; or Windows 10 (1803) or later with PowerShell 5.1 or 7.
 - The Databricks Agent Skills (v0.2.27 or later), as skill folders in the same skills directory as `forge` and the use-case skills. The installer sets this up.
 - A Unity Catalog workspace with serverless compute, and permission to create jobs. `forge-unstructured-doc-extraction` also needs AI Search endpoints (or an existing endpoint), and `forge-doc-qa-agent` needs Databricks Apps. Word-level localization in `forge-structured-doc-extraction` needs a classic job cluster. Each skill checks the exact privileges during preflight.
 
@@ -37,38 +69,51 @@ Each skill installs anything else it needs during preflight. For example, `forge
 
 ## Install
 
-Run the installer from the project folder where you use your agent (or pass `--global` to install for your user in every project):
+Run the installer in the project folder where you use your agent, or pass `--global` to install for your user in every project. It downloads the latest release, so there's nothing to clone:
 
 ```bash
-git clone https://github.com/bendoan-db/databricks-skill-forge.git
-cd my-project
-../databricks-skill-forge/install.sh                    # Claude Code, this project
-../databricks-skill-forge/install.sh --tools claude,codex --dry-run   # see the plan first
+bash <(curl -fsSL https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.sh)                                 # Claude Code, this project
+bash <(curl -fsSL https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.sh) --tools claude,codex --dry-run  # see the plan first
 ```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.ps1 | iex
+# With options:
+& ([scriptblock]::Create((irm https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.ps1))) -Tools claude,codex -DryRun
+```
+
+To pin a version, replace `latest/download` with `download/v0.1.0`. To read the script before running it, download it first (`curl -fsSLO …/install.sh`), then run `bash install.sh`.
 
 It shows its plan, asks once, and then:
 
 1. **Runs [AI Dev Kit](https://github.com/databricks-solutions/ai-dev-kit) v0.2.0.**
    - It installs every stable Databricks base skill through `databricks aitools`, plus the MLflow skills.
-   - It registers the Databricks MCP server with each agent. The server runs from an AI Dev Kit checkout in `~/.databricks-skill-forge/ai-dev-kit`.
+   - It registers the Databricks MCP server with each agent. The server runs from a copy of AI Dev Kit in `~/.databricks-skill-forge/ai-dev-kit`.
 2. **Copies the Forge skills** (`forge` and the use-case skills) into the same skills directories, and removes Forge skills installed under their names from before the `forge-` prefix.
 3. **Checks** that each use-case skill finds every base skill it needs.
 
-| Option | Effect |
-|---|---|
-| `-g`, `--global` | Install for your user, in every project |
-| `-d`, `--dir DIR` | Install into this project instead of the current directory |
-| `-t`, `--tools LIST` | Agents to install for (default `claude`): `claude`, `codex`, `copilot`, `cursor`, `gemini`, `antigravity`, `opencode`, `kiro`, `windsurf` |
-| `-p`, `--profile NAME` | Databricks CLI profile the MCP server uses (default `DEFAULT`) |
-| `--no-mcp` | Skip the MCP server |
-| `--forge-only` | Install or update only the Forge skills, next to base skills that are already installed |
-| `--ai-dev-kit-ref REF` | Use another AI Dev Kit release or branch |
-| `--dry-run` | Print the plan and change nothing |
-| `-y`, `--yes` | Don't ask for confirmation (needed when there's no terminal) |
+Every download is checked before anything is installed. The release's skills archive is checked against a checksum written into that release's installer, and AI Dev Kit's archive against a pinned checksum. A mismatch stops the install.
+
+| Option (bash) | Option (PowerShell) | Effect |
+|---|---|---|
+| `-g`, `--global` | `-Global` | Install for your user, in every project |
+| `-d`, `--dir DIR` | `-Dir DIR` | Install into this project instead of the current directory |
+| `-t`, `--tools LIST` | `-Tools LIST` | Agents to install for (default `claude`): `claude`, `codex`, `copilot`, `cursor`, `gemini`, `antigravity`, `opencode`, `kiro`, `windsurf` |
+| `-p`, `--profile NAME` | `-Profile NAME` | Databricks CLI profile the MCP server uses (default `DEFAULT`) |
+| `--no-mcp` | `-NoMcp` | Skip the MCP server |
+| `--forge-only` | `-ForgeOnly` | Install or update only the Forge skills, next to base skills that are already installed |
+| `--ai-dev-kit-ref REF` | `-AiDevKitRef REF` | Use another AI Dev Kit release or branch (not checksum-verified) |
+| `--dry-run` | `-DryRun` | Print the plan and change nothing |
+| `-y`, `--yes` | `-Yes` | Don't ask for confirmation (needed when there's no terminal) |
+| `-v`, `--version` | `-Version` | Print the installer's version |
 
 The installer requests the base skills by name. AI Dev Kit's default "all skills" install puts them in a plugin for Claude Code, Codex, and Copilot, and Forge needs them as folders in the same skills directory. If that plugin is already installed, the installer says so, and gives the command to remove it, because Claude Code would otherwise see two copies.
 
 Rerun the installer to update. Update only the base skills with `databricks aitools update`. Restart your agent after installing, so it loads the new skills.
+
+**From a clone:** `./install.sh` (or `.\install.ps1`) in a checkout installs that checkout's skills, which is how to test changes before a release.
 
 **Without the installer:** put the base skills in your agent's skills directory with `databricks aitools install --path .claude/skills`, then `cp -R databricks-skill-forge/skills/* .claude/skills/`. The `--path` flag matters: without it, `aitools` installs a plugin instead of folders. Then check each use-case skill with `uv run .claude/skills/<skill>/scripts/check_base_skills.py`. This route doesn't set up the MCP server.
 
@@ -141,8 +186,10 @@ databricks-skill-forge/
 │   ├── forge-doc-qa-agent/                # same layout
 │   └── forge-structured-doc-extraction/   # same layout
 ├── docs/                  # maintainer notes; not part of any published skill
-├── install.sh             # installer: base skills and MCP server through AI Dev Kit, then the Forge skills
-├── tools/                 # maintainer scripts, such as the forge catalog generator; not published
+├── install.sh, install.ps1  # installers (macOS/Linux, Windows): base skills and MCP server through AI Dev Kit, then Forge
+├── VERSION                # the release version; release tags are v<VERSION>
+├── .github/workflows/     # tests on every pull request; a v* tag also builds and publishes the release
+├── tools/                 # maintainer scripts (forge catalog generator, release builder); not published
 └── tests/                 # checks that run without a Databricks workspace
 ```
 
@@ -167,7 +214,18 @@ Run the checks before opening a pull request. They cover the SQL template placeh
 uv run --no-project --with pytest --with pyyaml --with pypdf --with rapidfuzz --with scipy pytest -q -p no:cacheprovider tests
 ```
 
-The end-to-end scenarios in each `evals/scenarios.yaml` need a Databricks workspace, and the routing evals in `skills/forge/evals/routing.yaml` need an agent harness.
+The end-to-end scenarios in each `evals/scenarios.yaml` need a Databricks workspace, and the routing evals in `skills/forge/evals/routing.yaml` need an agent harness. The PowerShell installer's tests need PowerShell, so they're skipped where it isn't installed; GitHub Actions runs them on Linux, macOS, and Windows.
+
+### Releasing
+
+1. Bump `VERSION` (semver), and merge.
+2. Tag and push: `git tag v$(cat VERSION) && git push origin v$(cat VERSION)`.
+
+The workflow reruns the tests, then:
+- builds the release with `tools/build_release.py`: the skills archive, the two installers with the version and the archive's checksum written into them, `SHA256SUMS`, and the release notes;
+- publishes them as a GitHub release.
+
+The `releases/latest/download/…` links then point at the new version. Preview a build locally with `uv run tools/build_release.py v$(cat VERSION) --out /tmp/forge-release`.
 
 ## Roadmap
 

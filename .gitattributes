@@ -1,0 +1,4 @@
+# LF everywhere, including Windows checkouts: release archives are built from these bytes, and both
+# installers and the skills' scripts expect LF.
+* text=auto eol=lf
+*.tar.gz binary

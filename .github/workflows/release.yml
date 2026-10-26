@@ -1,0 +1,60 @@
+# Tests on every pull request and push to main. A v* tag (the VERSION file's semver, such as v0.1.0) also builds
+# the release with tools/build_release.py and publishes it, so the no-clone installers can download it:
+#   https://github.com/bendoan-db/databricks-skill-forge/releases/latest/download/install.sh (and install.ps1)
+name: Test and release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"                           # the skills' text is UTF-8; Windows defaults to its code page
+  TEST_DEPS: --with pytest --with pyyaml --with pypdf --with rapidfuzz --with scipy
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Tests (all; install.sh under the runner's bash, install.ps1 under pwsh)
+        if: runner.os != 'Windows'
+        run: uv run --no-project $TEST_DEPS pytest -q -p no:cacheprovider tests
+      - name: Tests (install.ps1 under PowerShell 7 and Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: uv run --no-project $TEST_DEPS pytest -q -p no:cacheprovider tests/test_installer_ps1.py
+      - name: Forge catalog is current
+        if: runner.os == 'Linux'
+        run: uv run tools/build_forge_catalog.py --check
+      - name: shellcheck install.sh
+        if: runner.os == 'Linux'
+        run: uvx --from shellcheck-py shellcheck -s bash install.sh
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write                       # create the release and upload its files
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build (fails unless the tag matches VERSION)
+        run: uv run tools/build_release.py "$GITHUB_REF_NAME"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "Forge $GITHUB_REF_NAME" --notes-file dist/RELEASE_NOTES.md \
+            dist/install.sh dist/install.ps1 "dist/forge-skills-$GITHUB_REF_NAME.tar.gz" dist/SHA256SUMS
