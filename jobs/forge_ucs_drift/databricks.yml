@@ -1,0 +1,126 @@
+# forge_ucs_drift: every day, check databricks/databricks-agent-skills for new releases, work out which Forge skills
+# depend on what changed, and propose an update to each affected skill as a pull request
+# (docs/drift-pipeline-design.md). Not a skill: nothing here is published or installed.
+#
+#   cd jobs/forge_ucs_drift
+#   databricks bundle deploy                                      # target forge: profile forge
+#   databricks bundle run forge_ucs_drift                         # one run now (dry run unless dry_run=false)
+#   databricks bundle run forge_ucs_drift --params force=true     # analyze even if nothing changed
+#
+# dry_run defaults to true: runs write proposals and pull request text to the volume and open nothing on
+# GitHub. After the trial period, deploy with --var dry_run=false.
+bundle:
+  name: forge-ucs-drift
+
+variables:
+  catalog:
+    description: Catalog for the pipeline's schema and volume
+    default: fins_skill_forge_catalog
+  schema:
+    description: Schema for the pipeline's tables and volume
+    default: forge_drift
+  dry_run:
+    description: "'true': write proposals and pull request text to the volume; open nothing on GitHub"
+    default: "true"
+  forge_repo:
+    description: The Forge repository pull requests go to
+    default: bendoan-db/databricks-skill-forge
+  assess_model:
+    description: Model that decides whether an upstream change matters (system.ai)
+    default: system.ai.claude-sonnet-5-5
+  edit_model:
+    description: Model that writes the edits (system.ai)
+    default: system.ai.claude-opus-5-5
+  secret_scope:
+    description: Secret scope holding the GitHub token
+    default: forge
+  secret_key:
+    description: Key of the GitHub token (a fine-grained PAT with Contents and Pull requests write on forge_repo)
+    default: git-pat
+
+resources:
+  schemas:
+    forge_drift:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+      comment: forge_ucs_drift state (jobs/forge_ucs_drift in databricks-skill-forge)
+
+  volumes:
+    drift:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.forge_drift.name}
+      name: drift
+      comment: Upstream release trees, Forge trees, and each run's diffs, proposals, and pull request text
+
+  jobs:
+    forge_ucs_drift:
+      name: forge_ucs_drift
+      description: Proposes Forge skill updates for new databricks-agent-skills releases (jobs/forge_ucs_drift)
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: "0 0 10 * * ?"  # 10:00 UTC; upstream usually releases around 08:35 UTC
+        timezone_id: UTC
+        pause_status: UNPAUSED
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+      parameters:
+        - name: dry_run
+          default: ${var.dry_run}
+        - name: force
+          default: "false"
+        - name: skills
+          default: ""  # comma-separated Forge skills; empty means all
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - pyyaml>=6
+              - databricks-sdk>=0.40
+              # The Forge repository's own tests, which check every proposal:
+              - pytest>=8
+              - pypdf>=4
+              - rapidfuzz>=3
+              - scipy>=1.11
+      tasks:
+        - task_key: detect
+          environment_key: default
+          spark_python_task:
+            python_file: src/run.py
+            parameters: [detect, --run-id, "{{job.run_id}}", --catalog, "${var.catalog}", --schema, "${var.schema}",
+                         --dry-run, "{{job.parameters.dry_run}}", --force, "{{job.parameters.force}}",
+                         --skills, "{{job.parameters.skills}}", --forge-repo, "${var.forge_repo}",
+                         --secret-scope, "${var.secret_scope}", --secret-key, "${var.secret_key}"]
+        - task_key: analyze
+          depends_on: [{task_key: detect}]
+          environment_key: default
+          spark_python_task:
+            python_file: src/run.py
+            parameters: [analyze, --run-id, "{{job.run_id}}", --catalog, "${var.catalog}", --schema, "${var.schema}",
+                         --dry-run, "{{job.parameters.dry_run}}", --skills, "{{job.parameters.skills}}",
+                         --assess-model, "${var.assess_model}"]
+        - task_key: propose
+          depends_on: [{task_key: analyze}]
+          environment_key: default
+          timeout_seconds: 7200
+          spark_python_task:
+            python_file: src/run.py
+            parameters: [propose, --run-id, "{{job.run_id}}", --catalog, "${var.catalog}", --schema, "${var.schema}",
+                         --dry-run, "{{job.parameters.dry_run}}", --skills, "{{job.parameters.skills}}",
+                         --edit-model, "${var.edit_model}"]
+        - task_key: publish
+          depends_on: [{task_key: propose}]
+          environment_key: default
+          spark_python_task:
+            python_file: src/run.py
+            parameters: [publish, --run-id, "{{job.run_id}}", --catalog, "${var.catalog}", --schema, "${var.schema}",
+                         --dry-run, "{{job.parameters.dry_run}}", --forge-repo, "${var.forge_repo}",
+                         --secret-scope, "${var.secret_scope}", --secret-key, "${var.secret_key}"]
+
+targets:
+  # No `mode: development`: it pauses schedules, and this job exists to run every day.
+  forge:
+    default: true
+    workspace:
+      profile: forge
