@@ -14,6 +14,7 @@ PROMPTS = Path(__file__).resolve().parent / "prompts"
 MATERIALITY = ("none", "compatible", "material", "breaking")
 BUMPS = ("patch", "minor", "major")
 MAX_PROMPT_CHARS = 350_000  # well inside the models' context, with room for the answer
+RESPONSE_FIELDS = ("result", "response")  # the first one present is the model's answer
 
 
 def template(name: str, **values: str) -> str:
@@ -69,20 +70,32 @@ def check_proposal(value: dict) -> dict:
     return value
 
 
+def struct_fields(names: list[str]) -> tuple[str, str]:
+    """The (response, error) fields of ai_query's failOnError => false struct. The docs disagree on the response
+    field's name (`response` in the ai_query reference, `result` in upstream's examples). The 2026-10-26 run's
+    struct had no `response`; forge-unstructured-doc-extraction's prep_chunks.sql reads `result`."""
+    response = next((n for n in RESPONSE_FIELDS if n in names), None)
+    if response is None or "errorMessage" not in names:
+        raise ValueError(f"ai_query's failOnError => false struct has fields {names}, not "
+                         f"{' or '.join(RESPONSE_FIELDS)} and errorMessage")
+    return response, "errorMessage"
+
+
 def ai_query(spark, model: str, prompts: list[str], max_tokens: int) -> list[tuple[str | None, str | None]]:
     """[(response, error)] for each prompt, in one batched query. failOnError => false keeps one bad row from
-    failing the batch."""
+    failing the batch. The struct's fields are checked on the query's schema, before any model is called."""
     if not MODEL_RE.match(model):
         raise ValueError(f"model {model!r} isn't a system.ai model name")
     if not prompts:
         return []
     spark.createDataFrame(list(enumerate(prompts)), "id INT, prompt STRING").createOrReplaceTempView("forge_drift_prompts")
-    rows = spark.sql(
+    query = spark.sql(
         f"""SELECT id, ai_query('{model}', prompt,
                 failOnError => false,
                 responseFormat => '{{"type":"json_object"}}',
                 modelParameters => named_struct('max_tokens', {int(max_tokens)})) AS out
             FROM forge_drift_prompts"""
-    ).collect()
-    by_id = {r["id"]: (r["out"]["response"], r["out"]["errorMessage"]) for r in rows}
+    )
+    response, error = struct_fields(list(getattr(query.schema["out"].dataType, "names", None) or []))
+    by_id = {r["id"]: (r["out"][response], r["out"][error]) for r in query.collect()}
     return [by_id.get(i, (None, "no row returned")) for i in range(len(prompts))]

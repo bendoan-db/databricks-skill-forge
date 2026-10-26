@@ -103,6 +103,8 @@ uv run --no-project --with pyyaml --with pytest --with pypdf --with rapidfuzz --
 ## Not yet verified
 
 - **`ai_query` on these models.** That `system.ai.claude-sonnet-5-5` and `system.ai.claude-opus-5-5` accept `responseFormat => '{"type":"json_object"}'` and `max_tokens` 32,000, and return within the task timeout for prompts this size.
+  - **The `failOnError => false` struct.** The first run (2026-10-26) failed in `analyze`: the struct had no `response` field, which the ai_query reference names. Upstream's examples use `result`, and so does `forge-unstructured-doc-extraction`'s `prep_chunks.sql`. `llm.struct_fields` now takes `result` (or `response`) and `errorMessage`, checked on the query's schema before any model is called. Which name the runtime has is confirmed by the next run.
+  - **Serverless auto-optimization retries failed tasks.** That run's `analyze` ran three times, and each attempt called the assess model for every impact. The job doesn't turn this off; the next day's run already retries a run that didn't complete.
 - **The workspace setup:**
   - serverless egress to `api.github.com` and `codeload.github.com`;
   - volume support for the many small files the trees and artifacts write;

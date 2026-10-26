@@ -6,6 +6,7 @@ import shutil
 import sys
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -125,6 +126,43 @@ def test_parse_and_check_responses():
     assert llm.check_proposal({"bump": "minor", "edits": []})["edits"] == []
     with pytest.raises(ValueError):
         llm.check_proposal({"bump": "minor"})
+
+
+class FakeQuery:
+    """What spark.sql returns: a schema to check, and rows that cost a model call each to collect."""
+
+    def __init__(self, fields: list[str], rows: list[dict]):
+        self.schema = {"out": SimpleNamespace(dataType=SimpleNamespace(names=fields))}
+        self.rows, self.collected = rows, False
+
+    def collect(self) -> list[dict]:
+        self.collected = True
+        return self.rows
+
+
+class FakeSpark:
+    def __init__(self, query: FakeQuery):
+        self.query = query
+
+    def createDataFrame(self, data, schema):
+        return SimpleNamespace(createOrReplaceTempView=lambda name: None)
+
+    def sql(self, text: str) -> FakeQuery:
+        assert "failOnError => false" in text
+        return self.query
+
+
+def test_ai_query_reads_the_struct_it_gets():
+    query = FakeQuery(["result", "errorMessage"], [{"id": 1, "out": {"result": None, "errorMessage": "429"}},
+                                                    {"id": 0, "out": {"result": "{}", "errorMessage": None}}])
+    assert llm.ai_query(FakeSpark(query), "system.ai.m", ["a", "b", "c"], 10) == [("{}", None), (None, "429"),
+                                                                                (None, "no row returned")]
+    # A struct without the expected fields fails on the schema, before collect() bills a model call per row:
+    query = FakeQuery(["output", "status"], [])
+    with pytest.raises(ValueError, match="has fields"):
+        llm.ai_query(FakeSpark(query), "system.ai.m", ["a"], 10)
+    assert not query.collected
+    assert llm.struct_fields(["response", "errorMessage"]) == ("response", "errorMessage")
 
 
 def test_fit_cuts_the_last_sections():
