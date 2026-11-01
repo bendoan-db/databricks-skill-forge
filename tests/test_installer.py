@@ -23,9 +23,9 @@ from conftest import SKILLS, SKILLS_DIR, load_script
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="install.sh is for macOS and Linux; install.ps1 is tested on Windows")
 INSTALLER = SKILLS_DIR.parent / "install.sh"
 BASH = "/bin/bash" if Path("/bin/bash").exists() else shutil.which("bash")
-BASE_SKILLS = ["databricks-ai-functions", "databricks-apps-python", "databricks-core", "databricks-dabs", "databricks-jobs",
+BASE_SKILLS = ["databricks-ai-functions", "databricks-apps", "databricks-apps-python", "databricks-core", "databricks-dabs", "databricks-jobs",
                "databricks-mlflow-evaluation", "databricks-serverless", "databricks-serverless-migration",
-               "databricks-unity-catalog", "databricks-unity-gateway", "databricks-vector-search", "databricks-genie-agents"]
+               "databricks-lakebase", "databricks-unity-catalog", "databricks-unity-gateway", "databricks-vector-search", "databricks-genie-agents"]
 MLFLOW = ["agent-evaluation", "mlflow-onboarding"]
 
 # Stand-in AI Dev Kit install.sh: records how it was called, then writes base skill folders into each tool's
@@ -210,7 +210,7 @@ def test_removes_only_forge_made_legacy_copies(env: dict):
 
 def test_dry_run_changes_nothing(env: dict):
     result = run(env, "--dir", str(env["project"]), "--tools", "claude,codex", "--dry-run")
-    assert "12 stable skills from databricks-agent-skills 0.2.30" in result.stdout and "Dry run" in result.stdout
+    assert "14 stable skills from databricks-agent-skills 0.2.30" in result.stdout and "Dry run" in result.stdout
     assert not list(env["project"].iterdir()) and not list(env["log"].iterdir())
 
 

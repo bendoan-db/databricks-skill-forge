@@ -1,6 +1,7 @@
 """Checks every use-case skill must pass: manifest vs. module text, versions, thresholds, shared files, and folder limits.
 
-The forge router has no ucs.yaml, so only the folder limits apply to it here; tests/test_forge.py checks the rest.
+The forge router and the forge-smith builder have no ucs.yaml, so only the folder limits apply to them here;
+tests/test_forge.py and tests/test_forge_smith.py check the rest.
 
     uv run --no-project --with pytest --with pyyaml --with pypdf --with rapidfuzz --with scipy \
         pytest -q -p no:cacheprovider tests
@@ -103,7 +104,7 @@ def test_shared_files_are_identical():
         assert len(copies) == 1, f"{name} differs between {skills}: copy one over the others"
 
 
-@pytest.mark.parametrize("skill", [*SKILLS, "forge"])
+@pytest.mark.parametrize("skill", [*SKILLS, "forge", "forge-smith"])
 def test_skill_folder_limits(skill: str):
     folder = SKILLS_DIR / skill
     entries = list(folder.rglob("*"))

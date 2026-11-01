@@ -1,8 +1,10 @@
-# Template for the extraction job of the forge-structured-doc-extraction use-case skill (modules 01-04, 06).
+# Template for the extraction job of the forge-structured-doc-extraction use-case skill (modules 01-04, 06, 07).
 # Don't fill it by hand: `render.py` writes <name>-extract/databricks.yml from extraction.json, replacing
 # each whole-value <key> with a quoted value, and copies the job's scripts to src/. Lines between
 # "# >>> <block>" and "# <<< <block>" are optional: render.py drops the localize blocks unless localize is
-# on, and swaps the trigger block for a schedule when schedule_cron is set.
+# on, swaps the trigger block for a schedule when schedule_cron is set, keeps review_queue once the review
+# queue's synced table exists (review.sync_pipeline_id), and keeps review_sync once Lakehouse Sync writes the
+# decisions' history table (review.history_ready).
 bundle:
   name: <bundle_name>
 
@@ -28,6 +30,11 @@ variables:
   split_pages:
     description: "'folder' when each folder holds the single-page files of one document, else 'none'"
     default: <split_pages>
+  # >>> review_sync
+  history_table:
+    description: Lakehouse Sync history of the review app's decisions table (module 07)
+    default: <history_table>
+  # <<< review_sync
 
 resources:
   jobs:
@@ -135,6 +142,56 @@ resources:
               - --sql-dir
               - ${workspace.file_path}/src
         # <<< localize
+        # >>> review_queue
+        # Refreshes the review app's copy of <prefix>_review_candidates: a TRIGGERED synced table syncs only when its
+        # pipeline runs (a "Database Table Sync pipeline" task).
+        - task_key: review_queue
+          depends_on:
+            - task_key: extract
+          pipeline_task:
+            pipeline_id: <sync_pipeline_id>
+        # <<< review_queue
+    # >>> review_sync
+    review_sync:
+      name: doc review sync ${var.prefix}
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+      trigger:
+        pause_status: UNPAUSED
+        table_update:
+          table_names:
+            - ${var.history_table}
+          condition: ANY_UPDATED
+          min_time_between_triggers_seconds: 60
+          wait_after_last_change_seconds: 61  # must be over 60
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+      tasks:
+        - task_key: apply_decisions
+          environment_key: default
+          max_retries: 2  # a concurrent extraction run can conflict on the same document; a retry applies it
+          min_retry_interval_millis: 60000
+          spark_python_task:
+            python_file: src/extract.py
+            parameters:
+              - --stage
+              - decisions
+              - --history-table
+              - ${var.history_table}
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${var.schema}
+              - --prefix
+              - ${var.prefix}
+              - --config
+              - ${workspace.file_path}/src/extraction_config.json
+              - --sql-dir
+              - ${workspace.file_path}/src
+    # <<< review_sync
 
 targets:
   # No `mode: development`: development mode forces triggers to PAUSED, and this job exists to react to new files.
