@@ -29,7 +29,8 @@ For each stub in `scripts/`, port the source files its module came from (the stu
 
 - **Read every setting from the state file,** `--state <workdir>/<state_file>`, by the input names from module 03. Hard-code nothing.
 - **Keep the source's logic,** and fix what anatomy.md lists under "Improve on the source". Note each change for the design note (module 05).
-- **Declare dependencies** in the PEP 723 header. A job becomes a bundle template the skill renders from the state file, on serverless compute.
+- **Job and training code is a Databricks notebook.** Keep the stub's cells, its `build_parser()` flags, and its last cell (anatomy.md, Scripts). Put packages in its `%pip` cell. A job becomes a bundle template the skill renders from the state file, with a `notebook_task` per notebook, on serverless compute.
+- **App code stays a Python module** (`app_scripts`), and local tools declare their dependencies in the PEP 723 header.
 - **Don't run any of it.** It runs when the skill is certified.
 
 Write `measure()` in `scripts/evaluate.py` the same way.

@@ -1,7 +1,20 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Classify, extract, and publish
+# MAGIC
+# MAGIC The `extract` task of the forge-structured-doc-extraction job: it classifies parsed documents, extracts each
+# MAGIC type's fields with `ai_extract`, and writes the typed tables (with `stage` = `decisions`, the `review_sync`
+# MAGIC job's task, it applies review decisions instead). The job passes its settings as the widgets at the top; to run
+# MAGIC it by hand, fill them in. To keep a change you make here, export this notebook into the bundle's `src/` folder
+# MAGIC before the next deploy, which otherwise replaces it (module 01 of the skill).
+
+# COMMAND ----------
+
 """Classify, extract, and publish structured fields from parsed documents (forge-structured-doc-extraction modules 02-04, 07).
 
-Second task of the extraction job, after parse.py. Runs as a serverless ``spark_python_task``, or
-locally through Databricks Connect:
+Second task of the extraction job, after parse.py. It's a Databricks notebook: it runs as a serverless
+notebook task whose parameters arrive as widgets, or locally through Databricks Connect, with the same
+settings as flags:
 
     uv run --with "databricks-connect>=17" python extract.py --catalog main --schema loans \
         --prefix loan_files --config extraction_config.json
@@ -63,9 +76,10 @@ STAGES = ("extract", "decisions")
 DECISION_COLUMNS = ("review_id", "path", "segment_id", "doc_type", "field", "parsed_at", "ai_value", "decision", "value",
                     "comment", "reviewed_by", "reviewed_at", "decision_request_id", "row_version")
 
+# COMMAND ----------
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])  # a notebook has no __doc__
     p.add_argument("--catalog", required=True)
     p.add_argument("--schema", required=True)
     p.add_argument("--prefix", required=True, help="Table prefix: reads <prefix>_parsed")
@@ -78,7 +92,26 @@ def parse_args() -> argparse.Namespace:
                    help="decisions: apply the review app's decisions to the typed tables (module 07)")
     p.add_argument("--history-table", default="",
                    help="catalog.schema.lb_<prefix>_decisions_history, the Lakehouse Sync table --stage decisions reads")
-    return p.parse_args()
+    return p
+
+
+def notebook_argv(parser: argparse.ArgumentParser) -> list[str]:
+    """The notebook's widgets as command-line flags. A job's notebook task passes each setting as a widget named
+    like its flag (--volume-path is volume_path); a required one left empty is reported as missing."""
+    argv = []
+    for action in parser._actions:  # noqa: SLF001 - argparse has no public list of options
+        if not action.option_strings or action.dest == "help":
+            continue
+        dbutils.widgets.text(action.dest, "" if action.default is None else str(action.default))  # noqa: F821
+        value = dbutils.widgets.get(action.dest)  # noqa: F821 - dbutils exists in Databricks notebooks
+        if value or action.default is not None:
+            argv += [action.option_strings[0], value]
+    return argv
+
+
+def script_dir() -> Path:
+    """This file's folder: next to the script, or a notebook's own workspace folder, its working directory."""
+    return Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 
 
 def sql_string(value: str) -> str:
@@ -108,6 +141,7 @@ def render(sql: str, params: dict[str, str]) -> str:
 
     return PLACEHOLDER_RE.sub(substitute, sql)
 
+# COMMAND ----------
 
 # --- schema → table plan -----------------------------------------------------------------------------
 
@@ -275,6 +309,7 @@ def validate_config(config: dict) -> list[str]:
         errors += found or column_errors(doc_type, spec["schema"])
     return errors
 
+# COMMAND ----------
 
 # --- SQL fragments -----------------------------------------------------------------------------------
 
@@ -439,6 +474,7 @@ def build_params(args: argparse.Namespace, config: dict) -> dict[str, str]:
         "extract_input": input_expr(kind, scoped=config["layout"] == "packet"),
     }
 
+# COMMAND ----------
 
 # --- extracted values ----------------------------------------------------------------------------------
 
@@ -489,6 +525,7 @@ def get_spark():
 
     return DatabricksSession.builder.serverless().getOrCreate()
 
+# COMMAND ----------
 
 FIELD_SPECS_SCHEMA = "doc_type STRING, pattern STRING, field_type STRING, field_description STRING, enum_labels ARRAY<STRING>"
 
@@ -524,8 +561,8 @@ def apply_decisions(spark, run, set_batch_paths, plans: dict, args: argparse.Nam
     print(json.dumps({"documents_updated": len(pending)}))
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     config = json.loads(args.config.read_text())
     if errors := validate_config(config):
         raise SystemExit("extraction_config.json: " + "; ".join(errors))
@@ -537,7 +574,7 @@ def main() -> None:
     layout = config["layout"]
     review_app = config.get("review_app") is True
     plans = {doc_type: type_tables(table, doc_type, spec["schema"]) for doc_type, spec in types.items()}
-    sql_dir = Path(args.sql_dir) if args.sql_dir else Path(__file__).resolve().parent
+    sql_dir = Path(args.sql_dir) if args.sql_dir else script_dir()
     sections = load_sections(sql_dir / "extract.sql")
 
     spark = get_spark()
@@ -636,6 +673,8 @@ def main() -> None:
         summary["review_app_queue"] = spark.sql(f"SELECT count(*) AS n FROM {params['candidates_table']}").first().n
     print(json.dumps(summary))
 
+# COMMAND ----------
 
+# As a job's notebook task, the settings arrive as widgets; run as a script, as command-line flags.
 if __name__ == "__main__":
-    main()
+    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)

@@ -8,7 +8,9 @@
 
 Checks the frontmatter, the SKILL.md sections and their order, ucs.yaml against the module text (each module's
 Load lines name exactly its base skills, and so does its Workflow row), module shape, inputs, thresholds, the shared
-check_base_skills.py, leftover `smith:` markers, and the folder limits (50 entries, 3 levels, text only, no caches).
+check_base_skills.py, the job tasks (each one in scripts/databricks.yml is a notebook_task whose scripts/<file>.py is a
+Databricks notebook ending in the guarded run cell), leftover `smith:` markers, and the folder limits (50 entries,
+3 levels, text only, no caches).
 With --skills-dir, it also runs the skill's own check_base_skills.py against those base skills. The Forge repo's tests
 run this on every use-case skill, so its rules stay the same as theirs.
 """
@@ -28,6 +30,11 @@ SECTIONS = ["Reference architecture", "Conventions", "Inputs", "Guardrails", "Wo
 LOAD_LINE = re.compile(r"\*\*[Ll]oad:?\*\*")
 CACHES = {"__pycache__", ".ruff_cache", ".pytest_cache"}
 PIN = re.compile(r"^databricks/databricks-agent-skills@v\d+\.\d+\.\d+$")
+NOTEBOOK_HEADER = "# Databricks notebook source"
+RUN_CELL = ("# As a job's notebook task, the settings arrive as widgets; run as a script, as command-line flags.\n"
+            'if __name__ == "__main__":\n'
+            '    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)')
+NOTEBOOK_PATH = re.compile(r"^(?:\.\./)?src/([\w.-]+\.py)$")
 
 
 def frontmatter(text: str) -> dict:
@@ -135,6 +142,9 @@ def check(folder: Path, skills_dir: Path | None = None) -> list[str]:
     elif floors != (scenarios.get("defaults") or {}).get("thresholds"):
         problems.append("scripts/evaluate.py THRESHOLDS and evals/scenarios.yaml defaults.thresholds differ")
 
+    # Job and training code: notebook tasks running Databricks notebooks
+    problems += job_task_problems(folder)
+
     # Shared file
     shared = SMITH_DIR / "templates" / "check_base_skills.py"
     if (folder / "scripts" / "check_base_skills.py").read_bytes() != shared.read_bytes():
@@ -164,6 +174,41 @@ def check(folder: Path, skills_dir: Path | None = None) -> list[str]:
                                  "--skills-dir", str(skills_dir)], capture_output=True, text=True, check=False)
         if result.returncode:
             problems.append("check_base_skills.py: " + (result.stderr.strip().splitlines() or ["failed"])[-1])
+    return problems
+
+
+def job_task_problems(folder: Path) -> list[str]:
+    """Every job task in scripts/databricks.yml runs a Databricks notebook, so users can edit it in their workspace."""
+    template = folder / "scripts" / "databricks.yml"
+    if not template.is_file():
+        return []
+    try:
+        bundle = yaml.safe_load(template.read_text()) or {}
+    except yaml.YAMLError as e:
+        return [f"scripts/databricks.yml doesn't parse: {e}"]
+    problems = []
+    for job_key, job in ((bundle.get("resources") or {}).get("jobs") or {}).items():
+        for task in (job or {}).get("tasks") or []:
+            where = f"scripts/databricks.yml: job {job_key}, task {task.get('task_key')}"
+            for kind in ("spark_python_task", "python_wheel_task"):
+                if kind in task:
+                    problems.append(f"{where} is a {kind}; run job and training code as a notebook_task")
+            notebook = task.get("notebook_task")
+            if not notebook:
+                continue
+            match = NOTEBOOK_PATH.match(str(notebook.get("notebook_path", "")))
+            if not match:
+                problems.append(f"{where}: notebook_path must be src/<file>.py, the bundle's copy of scripts/<file>.py")
+                continue
+            script = folder / "scripts" / match.group(1)
+            if not script.is_file():
+                problems.append(f"{where}: scripts/{match.group(1)} is missing")
+                continue
+            text = script.read_text()
+            if not text.startswith(NOTEBOOK_HEADER):
+                problems.append(f"scripts/{match.group(1)}: a job task, so it must start with `{NOTEBOOK_HEADER}`")
+            if not text.rstrip().endswith(RUN_CELL):
+                problems.append(f"scripts/{match.group(1)}: must end with the guarded run cell (anatomy.md, Scripts)")
     return problems
 
 

@@ -1,7 +1,23 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Prepare search chunks
+# MAGIC
+# MAGIC The `chunk` task of the forge-unstructured-doc-extraction index job: it splits newly parsed documents into
+# MAGIC search chunks with `ai_prep_search`, optionally reading charts with a vision model first. The job passes its
+# MAGIC settings as the widgets at the top; to run it by hand, fill them in. To keep a change you make here, export
+# MAGIC this notebook into the bundle's `src/` folder before the next deploy, which otherwise replaces it (module 01).
+
+# COMMAND ----------
+
+# MAGIC %pip install -q "pillow>=10"
+
+# COMMAND ----------
+
 """Prepare search chunks from parsed documents, optionally with chart insights (forge-unstructured-doc-extraction module 02).
 
-Second task of the index job, after parse.py. Runs as a serverless ``spark_python_task``, or locally
-through Databricks Connect:
+Second task of the index job, after parse.py. It's a Databricks notebook: it runs as a serverless notebook
+task whose parameters arrive as widgets, or locally through Databricks Connect, with the same settings as
+flags:
 
     uv run --with "databricks-connect>=17" --with pillow python prep_chunks.py --catalog main \
         --schema docs --prefix contracts
@@ -42,9 +58,10 @@ DEFAULT_CHART_PROMPT = (
 )
 MIN_CROP_PIXELS = 32
 
+# COMMAND ----------
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])  # a notebook has no __doc__
     p.add_argument("--catalog", required=True)
     p.add_argument("--schema", required=True)
     p.add_argument("--prefix", required=True, help="Table prefix: reads <prefix>_parsed, writes <prefix>_chunks")
@@ -56,7 +73,26 @@ def parse_args() -> argparse.Namespace:
                    help="Re-chunk every parsed document (no re-parse)")
     p.add_argument("--batch-size", type=int, default=50)
     p.add_argument("--sql-dir", default="", help="Directory holding prep_chunks.sql (default: next to this file)")
-    return p.parse_args()
+    return p
+
+
+def notebook_argv(parser: argparse.ArgumentParser) -> list[str]:
+    """The notebook's widgets as command-line flags. A job's notebook task passes each setting as a widget named
+    like its flag (--volume-path is volume_path); a required one left empty is reported as missing."""
+    argv = []
+    for action in parser._actions:  # noqa: SLF001 - argparse has no public list of options
+        if not action.option_strings or action.dest == "help":
+            continue
+        dbutils.widgets.text(action.dest, "" if action.default is None else str(action.default))  # noqa: F821
+        value = dbutils.widgets.get(action.dest)  # noqa: F821 - dbutils exists in Databricks notebooks
+        if value or action.default is not None:
+            argv += [action.option_strings[0], value]
+    return argv
+
+
+def script_dir() -> Path:
+    """This file's folder: next to the script, or a notebook's own workspace folder, its working directory."""
+    return Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 
 
 def sql_string(value: str) -> str:
@@ -86,6 +122,7 @@ def render(sql: str, params: dict[str, str]) -> str:
 
     return PLACEHOLDER_RE.sub(substitute, sql)
 
+# COMMAND ----------
 
 def metadata_columns(raw: str) -> dict[str, str]:
     """Return {column: SQL type} for the metadata schema, rejecting shapes the index can't filter on."""
@@ -132,6 +169,7 @@ def build_params(args: argparse.Namespace, columns: dict[str, str]) -> dict[str,
         "chart_prompt": sql_string(args.chart_prompt or DEFAULT_CHART_PROMPT),
     }
 
+# COMMAND ----------
 
 def crop_box(coord: list[float] | None, size: tuple[int, int], pad: int = 8) -> tuple[int, int, int, int] | None:
     """Pixel box for a figure's bbox coord on a page image of ``size``, padded and clamped; None if too small."""
@@ -174,6 +212,7 @@ def add_chart_insights(parsed: dict, insights: list[dict]) -> dict:
             element["description"] = f"{description}\n\nChart reading:\n{insight}".strip()
     return parsed
 
+# COMMAND ----------
 
 def get_spark():
     if "DATABRICKS_RUNTIME_VERSION" in os.environ:
@@ -185,12 +224,12 @@ def get_spark():
     return DatabricksSession.builder.serverless().getOrCreate()
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     columns = metadata_columns(args.metadata_schema)
     params = build_params(args, columns)
     charts = args.chart_insights == "true"
-    sql_dir = Path(args.sql_dir) if args.sql_dir else Path(__file__).resolve().parent
+    sql_dir = Path(args.sql_dir) if args.sql_dir else script_dir()
     sections = load_sections(sql_dir / "prep_chunks.sql")
 
     spark = get_spark()
@@ -252,6 +291,8 @@ def main() -> None:
         summary.update(charts_read=insights.charts, chart_errors=insights.errors)
     print(json.dumps(summary))
 
+# COMMAND ----------
 
+# As a job's notebook task, the settings arrive as widgets; run as a script, as command-line flags.
 if __name__ == "__main__":
-    main()
+    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)

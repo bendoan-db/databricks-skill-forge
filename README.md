@@ -244,6 +244,7 @@ databricks-skill-forge/
 - **Point to base skills; don't restate them.** A step that needs platform detail names the base skill and reference file in a **Load:** line. Base skills aren't loaded up front.
 - **Gate every module.** Each module ends with a Verify step that can actually fail.
 - **Render, don't hand-fill.** Values resolved during the workflow go into a state file, and templates are rendered from it by a script that validates the result.
+- **Ship pipeline and training code as Databricks notebooks.** Job tasks are notebook tasks, so users can open, change, and rerun them in their workspace. Each one reads its settings from widgets and still runs as a script through Databricks Connect (`scripts/parse.py` is the pattern). App and agent code stays as normal Python modules, and local helper tools stay scripts. The tests check every job task.
 - **Docs win over base skills.** When a base skill is out of date, add a one-line override to SKILL.md, record the gap with doc evidence in `ucs.yaml` (`coverage_gaps`), and draft an upstream change proposal in `docs/`.
 - **Track hard-coded facts.** Platform limits and defaults a skill depends on go in `ucs.yaml` (`facts`), with a source and the files that use them.
 - **Stay within skill limits:** at most 50 files or folders, at most 3 levels deep, text files only, and a frontmatter description of at most 1,024 characters.

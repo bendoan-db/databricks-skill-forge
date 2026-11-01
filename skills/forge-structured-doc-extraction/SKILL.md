@@ -39,6 +39,7 @@ Optional review app (07): <prefix>_review_candidates ══ Lakebase synced tabl
 - `<workdir>/extraction.json` holds every resolved value, including the document types and their schemas. Module 00 creates it, each module reads it first, and you record what a module adds before you move on. In commands, `<key>` means the value of `key` in that file, for example `<profile>` or `<prefix>`.
 - A **Load:** line names a base skill, and usually one reference file in it, to read at that step. Don't load base skills up front, and read only the file named.
 - Scripts declare their own dependencies, so run them with `uv run <skill>/scripts/<file>.py` from any directory. Use `render.py` to fill templates. Never fill `<...>` placeholders in `scripts/` by hand.
+- The job's tasks (`parse.py`, `extract.py`, `localize.py`) are Databricks notebooks, so users can open and change them in the workspace. To keep such a change, see module 01, Editing the job's notebooks.
 
 ## Inputs
 

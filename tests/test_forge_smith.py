@@ -1,5 +1,6 @@
 """Checks for the forge-smith builder skill (skills/forge-smith): its scanner, scaffold, and checker. No workspace."""
 
+import ast
 import importlib.util
 import json
 import re
@@ -246,7 +247,9 @@ def test_scaffold_writes_a_skill_that_passes_once_filled(skills: Path, tmp_path:
     shared = (SMITH / "templates" / "check_base_skills.py").read_bytes()
     assert (folder / "scripts" / "check_base_skills.py").read_bytes() == shared
     assert "THRESHOLDS = {'precision_at_review': 0.8}" in (folder / "scripts" / "evaluate.py").read_text()
-    assert "# smith: 01-ingest: port notebooks/01_ingest.py" in (folder / "scripts" / "ingest.py").read_text()
+    ingest = (folder / "scripts" / "ingest.py").read_text()  # job code: a Databricks notebook stub
+    assert ingest.startswith(check_skill.NOTEBOOK_HEADER) and ingest.rstrip().endswith(check_skill.RUN_CELL)
+    assert "# smith: 01-ingest: port notebooks/01_ingest.py" in ingest
 
     fill(folder)
     assert check_skill.check(folder, skills) == []  # including its own check_base_skills.py against the skills
@@ -254,6 +257,58 @@ def test_scaffold_writes_a_skill_that_passes_once_filled(skills: Path, tmp_path:
 
     again = run("scaffold.py", "--state", str(state), "--skills-dir", str(skills))
     assert again.returncode == 1 and "already exists" in again.stderr
+
+
+def job_blueprint() -> dict:
+    """The example with a job template and an app module: job code is a notebook, app code a module."""
+    bp = example_blueprint()
+    bp["modules"][1]["scripts"] = ["scripts/ingest.py", "scripts/score.py", "scripts/databricks.yml"]
+    bp["modules"][1]["app_scripts"] = ["scripts/app/app.py"]
+    return bp
+
+
+def test_scaffold_runs_job_code_as_notebook_tasks(skills: Path, tmp_path: Path):
+    folder = scaffold.scaffold(job_blueprint(), skills, tmp_path / "out")
+    tasks = yaml.safe_load((folder / "scripts" / "databricks.yml").read_text())["resources"]["jobs"]["job"]["tasks"]
+    assert [(t["task_key"], t["notebook_task"]["notebook_path"]) for t in tasks] == [
+        ("ingest", "src/ingest.py"), ("score", "src/score.py")]
+    assert tasks[1]["depends_on"] == [{"task_key": "ingest"}] and tasks[0]["notebook_task"]["base_parameters"] == {}
+    assert (folder / "scripts" / "score.py").read_text().startswith(check_skill.NOTEBOOK_HEADER)
+    app = (folder / "scripts" / "app" / "app.py").read_text()
+    assert "Databricks notebook" not in app and "smith: 01-ingest" in app  # app code stays a module
+    assert "scripts/app/app.py" in yaml.safe_load((folder / "ucs.yaml").read_text())["modules"][1]["scripts"]
+    fill(folder)
+    assert check_skill.check(folder, skills) == []
+    for script in ("ingest.py", "score.py"):  # a filled notebook stub is still Python
+        ast.parse((folder / "scripts" / script).read_text())
+
+
+def test_check_skill_requires_notebook_job_tasks(skills: Path, tmp_path: Path):
+    folder = scaffold.scaffold(job_blueprint(), skills, tmp_path / "out")
+    fill(folder)
+    template = folder / "scripts" / "databricks.yml"
+    template.write_text(template.read_text().replace(
+        "notebook_task:\n            notebook_path: src/score.py",
+        "spark_python_task:\n            python_file: src/score.py"))
+    ingest = folder / "scripts" / "ingest.py"
+    ingest.write_text(ingest.read_text().removeprefix(check_skill.NOTEBOOK_HEADER + "\n"))
+    problems = "\n".join(check_skill.check(folder))
+    assert "task score is a spark_python_task" in problems
+    assert "scripts/ingest.py: a job task, so it must start with `# Databricks notebook source`" in problems
+
+
+def test_notebook_template_helpers_match_the_shared_parse_stage():
+    """templates/notebook.py carries the reference notebook's helpers; the shared parse.py is that reference."""
+    def functions(path: Path) -> dict[str, str]:
+        text = path.read_text()
+        return {n.name: ast.get_source_segment(text, n) for n in ast.parse(text).body if isinstance(n, ast.FunctionDef)}
+
+    template = functions(SMITH / "templates" / "notebook.py")
+    parse = functions(SKILLS_DIR / "forge-structured-doc-extraction" / "scripts" / "parse.py")
+    for name in ("notebook_argv", "script_dir", "get_spark"):
+        assert template[name] == parse[name], f"templates/notebook.py {name}() differs from parse.py's"
+    run_cell = (SMITH / "templates" / "notebook.py").read_text().rstrip()
+    assert run_cell.endswith(check_skill.RUN_CELL)
 
 
 def test_routed_skills_start_through_forge(skills: Path, tmp_path: Path):
@@ -278,6 +333,7 @@ def test_blueprint_example_is_valid(skills: Path):
     (lambda bp: bp["inputs"]["required"][0].pop("ask"), "required inputs need `ask`"),
     (lambda bp: bp.update(state_file="Claims.JSON"), "state_file"),
     (lambda bp: bp.update(upstream="latest"), "upstream"),
+    (lambda bp: bp["modules"][1].update(app_scripts=["app/app.py"]), "app script"),
 ])
 def test_scaffold_refuses_unready_blueprints(skills: Path, change, expected: str):
     bp = example_blueprint()

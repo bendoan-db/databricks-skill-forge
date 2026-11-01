@@ -104,6 +104,61 @@ def test_shared_files_are_identical():
         assert len(copies) == 1, f"{name} differs between {skills}: copy one over the others"
 
 
+NOTEBOOK_HEADER = "# Databricks notebook source"
+RUN_CELL = ("# As a job's notebook task, the settings arrive as widgets; run as a script, as command-line flags.\n"
+            'if __name__ == "__main__":\n'
+            '    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)')
+JOB_SKILLS = [skill for skill in SKILLS if (SKILLS_DIR / skill / "scripts" / "databricks.yml").is_file()]
+
+
+def parser_flags(script: Path) -> dict[str, bool]:
+    """{dest: required} for each add_argument in the script's build_parser(), read from its source: importing a
+    notebook would need its runtime packages (the Databricks SDK, pyspark)."""
+    tree = ast.parse(script.read_text())
+    build = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_parser"), None)
+    assert build, f"{script.name} has no build_parser()"
+    flags = {}
+    for call in ast.walk(build):
+        if isinstance(call, ast.Call) and getattr(call.func, "attr", None) == "add_argument":
+            keywords = {k.arg: k.value for k in call.keywords}
+            dest = ast.literal_eval(keywords["dest"]) if "dest" in keywords else (
+                ast.literal_eval(call.args[0]).lstrip("-").replace("-", "_"))
+            flags[dest] = "required" in keywords and ast.literal_eval(keywords["required"]) is True
+    return flags
+
+
+@pytest.mark.parametrize("skill", JOB_SKILLS)
+def test_job_tasks_are_notebooks(skill: str):
+    """Job and training code runs as notebook tasks, so users can open and edit it in their workspace. App code
+    and the agent's local tools stay plain Python."""
+    scripts = SKILLS_DIR / skill / "scripts"
+    bundle = yaml.safe_load((scripts / "databricks.yml").read_text())  # the optional `# >>>` blocks are comments
+    notebooks = set()
+    for job_key, job in bundle["resources"]["jobs"].items():
+        job_parameters = {p["name"] for p in job.get("parameters") or []}
+        for task in job["tasks"]:
+            where = f"{job_key}.{task['task_key']}"
+            assert not {"spark_python_task", "python_wheel_task"} & set(task), f"{where}: use a notebook_task"
+            if "notebook_task" not in task:
+                continue
+            path = task["notebook_task"]["notebook_path"]
+            assert path.startswith("src/"), f"{where}: notebook_path {path} isn't the bundle's copy of scripts/"
+            script = scripts / path.removeprefix("src/")
+            text = script.read_text()
+            assert text.startswith(NOTEBOOK_HEADER), f"{script.name} must start with {NOTEBOOK_HEADER!r}"
+            assert text.rstrip().endswith(RUN_CELL), f"{script.name} must end with the guarded run cell"
+            notebooks.add(script.name)
+            flags = parser_flags(script)
+            given = set(task["notebook_task"].get("base_parameters") or {})
+            extra = sorted(given - set(flags))
+            assert not extra, f"{where}: base_parameters {extra} aren't flags of {script.name}"
+            missing = {dest for dest, required in flags.items() if required} - given - job_parameters
+            assert not missing, f"{where}: required settings {sorted(missing)} aren't passed"
+    for script in scripts.glob("*.py"):
+        if script.name not in notebooks and not script.read_text().startswith(NOTEBOOK_HEADER):
+            assert "dbutils.widgets" not in script.read_text(), f"{script.name} reads widgets but isn't a notebook"
+
+
 @pytest.mark.parametrize("skill", [*SKILLS, "forge", "forge-smith"])
 def test_skill_folder_limits(skill: str):
     folder = SKILLS_DIR / skill
@@ -114,3 +169,19 @@ def test_skill_folder_limits(skill: str):
     for path in entries:
         if path.is_file():
             path.read_text(encoding="utf-8")  # text files only
+
+
+@pytest.mark.parametrize("skill", JOB_SKILLS)
+def test_notebook_helpers_match_the_shared_parse_stage(skill: str):
+    """Each job notebook carries its own copy of the parse stage's widget helpers (skills can't share imports);
+    a copy that drifts would read a task's settings differently from the others."""
+    def functions(path: Path) -> dict[str, str]:
+        text = path.read_text()
+        return {n.name: ast.get_source_segment(text, n) for n in ast.parse(text).body if isinstance(n, ast.FunctionDef)}
+
+    reference = functions(SKILLS_DIR / "forge-structured-doc-extraction" / "scripts" / "parse.py")
+    for script in sorted((SKILLS_DIR / skill / "scripts").glob("*.py")):
+        if script.read_text().startswith(NOTEBOOK_HEADER):
+            for name, source in functions(script).items():
+                if name in ("notebook_argv", "script_dir"):
+                    assert source == reference[name], f"{skill}/{script.name}: {name}() differs from parse.py's; copy it over"

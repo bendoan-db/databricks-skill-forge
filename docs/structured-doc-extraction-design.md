@@ -84,6 +84,19 @@ Module 07 adds a human-in-the-loop review app, built from [hil-doc-extraction](h
 - **Preflight asks for an existing schema.** A user with one gives it in any format. It's saved as `provided_schema.<ext>`, and module 03 converts it. Without one, module 03 builds the schema with the user, field by field. It isn't written to `document_types` in preflight, because the job's trigger unpauses once `document_types` exists. Owner direction, 2026-11-01.
 - **Preflight asks.** `review_app` is a required input with no default: module 00 asks yes or no, and `render.py` refuses to render until the answer is recorded. Yes runs module 07 after the pipeline modules; no creates nothing for the app. Owner direction, 2026-11-01.
 
+## Changes: job tasks are notebooks
+
+- **Why:** users should be able to open and change the job's code in their workspace. `parse.py`, `extract.py`, and `localize.py` are Databricks notebooks (source format), and every job task is a `notebook_task`. Bundle deploy imports a `.py` file with the notebook header as a notebook.
+- **Settings:**
+  - Each task's `base_parameters` arrive as widgets, and `notebook_argv()` turns them back into the script's own flags, so the same file still runs locally through Databricks Connect.
+  - The job parameter `full_refresh` reaches the notebooks as a widget without being repeated in `base_parameters`.
+  - A notebook has no `__file__` and no `__doc__`, so `script_dir()` falls back to the working directory (a notebook's own folder), and the argparse description tolerates a missing docstring.
+- **Dependencies:** a `%pip` cell in the notebook replaces the job `environments` block. The base skills disagree on whether a notebook task takes an `environment_key`: `databricks-jobs` shows one, and `databricks-serverless` says notebook tasks need nothing else. `%pip` works either way. `localize.py` keeps its cluster libraries on the classic job cluster.
+- **Keeping workspace edits:**
+  - A deploy replaces the workspace copies, so module 01 has the user export an edited notebook (or SQL file) into the bundle's `src/`.
+  - `render.py` marks each copied job file with a checksum line, and keeps a copy that no longer matches it, listing it under `kept_edited`. `--force` replaces it.
+  - A copy without the line, from an older `render.py`, is replaced, since the user can't have edited it after this change.
+
 ## Not yet verified in a workspace
 
 Nothing here has run against a workspace. The static tests cover rendering, validation, SQL placeholders, stitching, scoring, and OCR matching. These platform behaviors are assumptions:
@@ -109,5 +122,10 @@ Nothing here has run against a workspace. The static tests cover rendering, vali
     - the `@databricks/appkit-ui` components it imports.
     The source app used the same APIs at AppKit 0.38.1.
 12. Concurrent writes: a `review_sync` MERGE and an extraction run's delete-then-insert on different documents of one typed table don't conflict (row-level concurrency). On the same document, the task's retries cover it.
+
+13. The workspace's default serverless environment, which notebook tasks run on, supports what `parse.py` and `extract.py` need: VARIANT, `ai_parse_document`, `ai_classify`, and `ai_extract` from `spark.sql`. The job's `environment_version: "4"` used to pin this.
+14. A `%pip install` cell works in a serverless notebook task, with egress to PyPI, and pypdf reaches the workers that count pages.
+15. The job parameter `full_refresh` reaches the `extract` notebook as a widget without being listed in `base_parameters`.
+16. A notebook exported with `databricks workspace export --format SOURCE` keeps `render.py`'s checksum line within two lines of the top. If the export reformats an unedited notebook, `render.py` keeps it as edited, which is safe but stops skill updates reaching it.
 
 The certification scenarios in `evals/scenarios.yaml` (`long-pdf`, `split-pages`, `paystubs-single-type-localized`, `mortgage-packets`, `review-app-round-trip`) exercise each of these.

@@ -25,6 +25,13 @@ Maintainer notes for `skills/forge-smith`, the charter's "Use Case Skill Builder
 
 **The shared file.** `templates/check_base_skills.py` is one more copy of the shared script. The forge-smith test fails when it drifts from the use-case skills' copies. The drift job's `sync_shared` reads `ucs.yaml` `shared` lists, so it doesn't update this copy. A drift edit to the script fails that test, and the pull request gets marked needs-owner.
 
+## Job code is notebooks
+
+Since 2026-11-01, pipeline and training code in every Forge skill is a Databricks notebook, run as a `notebook_task`, so users can open, run, and edit it in their workspace (owner direction). App code stays Python modules, the platform's practice for apps, and the agent's local tools (`render.py`, `evaluate.py`, `check_base_skills.py`) stay `uv` scripts.
+- **Stubs:** `scaffold.py` writes job and training stubs from `templates/notebook.py`, and a `scripts/databricks.yml` stub with a notebook task for each one. A module's `app_scripts` get plain-module stubs.
+- **Checks:** `check_skill.py` checks that every job task in `scripts/databricks.yml` is a `notebook_task`, and that the notebook it runs starts with the notebook header and ends with the guarded run cell. `tests/test_skills.py` checks the same on the hand-built skills, and also that each task's `base_parameters` are flags of its notebook's `build_parser()`.
+- **The skeleton's helpers** (`notebook_argv`, `script_dir`, `get_spark`) are copies of the shared `parse.py`'s; `tests/test_forge_smith.py` fails when they drift.
+
 ## Discovery questions
 
 Module 03 turns every setting into exactly one class: a required question, an optional input, a derived value, a check, a secret by name, or dropped. Its rules come from `forge-unstructured-doc-extraction`'s module 00, the first skill written to ask before building:

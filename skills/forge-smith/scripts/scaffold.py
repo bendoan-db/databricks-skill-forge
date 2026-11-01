@@ -8,7 +8,9 @@
 
 Writes <out>/<name>/ (default <out>: the skills folder holding forge-smith): SKILL.md, modules/, ucs.yaml,
 evals/scenarios.yaml, scripts/check_base_skills.py, scripts/evaluate.py, and a stub for every other script a
-module lists. Everything the blueprint settles is filled in: frontmatter, the Inputs table, module 00's
+module lists. Job and training code stubs are Databricks notebooks (templates/notebook.py), and a scripts/databricks.yml
+stub runs them as notebook tasks; app code stubs (a module's `app_scripts`) stay Python modules. Everything the
+blueprint settles is filled in: frontmatter, the Inputs table, module 00's
 discovery questions, checks, permissions, and cost list, each module's Load lines (one per base skill), the
 Workflow table, ucs.yaml with the installed base-skill versions, and the thresholds. What only the agent can
 write is left as a `smith:` marker; check_skill.py fails until none are left. Refuses to write into an existing
@@ -32,6 +34,9 @@ MODULE_RE = re.compile(r"^(\d\d)-[a-z0-9]+(-[a-z0-9]+)*$")
 STATE_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.json$")
 TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 INPUT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+SCRIPT_RE = re.compile(r"^scripts/[\w.-]+$")
+APP_SCRIPT_RE = re.compile(r"^scripts/([\w.-]+/)?[\w.-]+$")  # app code may sit in its own folder, such as scripts/app/
+LOCAL_TOOLS = {"render.py", "evaluate.py", "check_base_skills.py"}  # run by the agent with uv, not deployed
 MARK = "<!-- smith: {} -->"
 
 
@@ -98,8 +103,11 @@ def check_blueprint(bp: dict, skills_dir: Path) -> list[str]:
         if module.get("id") != "00-preflight" and not (module.get("title") and module.get("produces")):
             problems.append(f"module {module.get('id')}: needs title and produces")
         for script in module.get("scripts", []):
-            if not re.match(r"^scripts/[\w.-]+$", script):
+            if not SCRIPT_RE.match(script):
                 problems.append(f"module {module.get('id')}: script {script!r} must be scripts/<file>")
+        for script in module.get("app_scripts", []):
+            if not APP_SCRIPT_RE.match(script):
+                problems.append(f"module {module.get('id')}: app script {script!r} must be scripts/[<folder>/]<file>")
         for dep in module.get("base_skills", []):
             folder = skills_dir / str(dep.get("name"))
             if not (folder / "SKILL.md").is_file():
@@ -390,7 +398,7 @@ def ucs_yaml(bp: dict, skills_dir: Path) -> str:
 
     modules = []
     for m in bp["modules"]:
-        scripts = list(m.get("scripts") or [])
+        scripts = list(m.get("scripts") or []) + list(m.get("app_scripts") or [])
         if m["id"] == "00-preflight" and "scripts/check_base_skills.py" not in scripts:
             scripts.insert(0, "scripts/check_base_skills.py")
         if m["id"].endswith("-evaluate") and "scripts/evaluate.py" not in scripts:
@@ -465,9 +473,66 @@ def evaluate_py(bp: dict) -> str:
     return text
 
 
-def stub(script: str, module: dict) -> str:
+def is_notebook(script: str) -> bool:
+    """Job and training code: a Python script a module ports that isn't one of the agent's local tools."""
+    return script.endswith(".py") and Path(script).name not in LOCAL_TOOLS
+
+
+def notebook_stub(bp: dict, script: str, module: dict) -> str:
+    sources = ", ".join(module.get("sources") or []) or "the source"
+    title = module.get("title") or Path(script).stem.replace("_", " ").capitalize()
+    text = (TEMPLATES / "notebook.py").read_text()
+    for placeholder, value in {"<title>": title, "<skill-name>": bp["name"], "<module-id>": module["id"],
+                               "<sources>": sources}.items():
+        text = text.replace(placeholder, value)
+    return text
+
+
+def bundle_stub(bp: dict) -> str:
+    """scripts/databricks.yml with one notebook task per notebook stub, in module order."""
+    notebooks = [s for m in bp["modules"] for s in m.get("scripts") or [] if is_notebook(s)]
+    tasks, previous = [], None
+    for script in dict.fromkeys(notebooks):
+        key = re.sub(r"[^a-z0-9_]", "_", Path(script).stem.lower())
+        tasks += [f"        - task_key: {key}",
+                  *([ "          depends_on:", f"            - task_key: {previous}"] if previous else []),
+                  "          notebook_task:",
+                  f"            notebook_path: src/{Path(script).name}",
+                  "            base_parameters: {}  # smith: one entry per flag in its build_parser(), named like the "
+                  "flag's dest, from the state file"]
+        previous = key
+    return "\n".join([
+        f"# Template for {bp['name']}'s job. # smith: render it from {bp['state_file']}, filling each whole-value <key>",
+        "# Job and training code runs as notebook tasks, so users can open and edit it in their workspace (anatomy.md).",
+        "bundle:",
+        "  name: <bundle_name>",
+        "",
+        "resources:",
+        "  jobs:",
+        "    job:",
+        "      name: <bundle_name>",
+        "      max_concurrent_runs: 1",
+        "      tasks:" if tasks else "      tasks: []  # smith: a notebook task for each job or training notebook",
+        *tasks,
+        "",
+        "targets:",
+        "  default:",
+        "    default: true",
+        "    workspace:",
+        "      profile: <profile>",
+        "",
+    ])
+
+
+def stub(bp: dict, script: str, module: dict, app: bool = False) -> str:
+    if script == "scripts/databricks.yml":
+        return bundle_stub(bp)
+    if is_notebook(script) and not app:
+        return notebook_stub(bp, script, module)
     sources = ", ".join(module.get("sources") or []) or "the source"
     comment = {".sql": "--", ".py": "#", ".sh": "#", ".yml": "#", ".yaml": "#"}.get(Path(script).suffix, "#")
+    if app:  # app code stays a module: it's imported and packaged by the app, not run as a notebook
+        return f"{comment} smith: {module['id']}: port {sources} here as app code, a normal module (not a notebook)\n"
     header = ("# /// script\n# requires-python = \">=3.11\"\n# dependencies = []\n# ///\n" if script.endswith(".py") else "")
     return f"{header}{comment} smith: {module['id']}: port {sources} here, with every setting read from the state file\n"
 
@@ -483,7 +548,9 @@ def scaffold(bp: dict, skills_dir: Path, out: Path) -> Path:
     for module in bp["modules"]:
         files[f"modules/{module['id']}.md"] = preflight_md(bp) if module["id"] == "00-preflight" else module_md(bp, module)
         for script in module.get("scripts") or []:
-            files.setdefault(script, stub(script, module))
+            files.setdefault(script, stub(bp, script, module))
+        for script in module.get("app_scripts") or []:
+            files.setdefault(script, stub(bp, script, module, app=True))
     for rel, text in files.items():
         (folder / rel).parent.mkdir(parents=True, exist_ok=True)
         (folder / rel).write_text(text)

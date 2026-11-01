@@ -21,7 +21,7 @@ Set up a bundle-managed Lakeflow job that parses every supported file in the vol
    uv run <skill>/scripts/render.py --state <workdir>/doc-index.json
    ```
 
-   This writes `<workdir>/<name>-index/databricks.yml` with every value from `doc-index.json` and copies the job's scripts to its `src/`: `parse.py` and `parse.sql` (the shared Forge parse stage), `prep_chunks.py` and `prep_chunks.sql`, and `sync_index.py`. To change a value later, edit `doc-index.json` and render again. The script stops rather than overwrite a `databricks.yml` that was edited by hand.
+   This writes `<workdir>/<name>-index/databricks.yml` with every value from `doc-index.json` and copies the job's notebooks and SQL files to its `src/`: `parse.py` and `parse.sql` (the shared Forge parse stage), `prep_chunks.py` and `prep_chunks.sql`, and `sync_index.py`. Each task is a notebook task. To change a value later, edit `doc-index.json` and render again. The script stops rather than overwrite a `databricks.yml` that was edited by hand, and it keeps a copy you changed (see Editing the job's notebooks).
 
 4. **Validate and deploy.** Deploying creates the job but doesn't run it. **Load:** `databricks-dabs` (validate, deploy, and run).
 
@@ -46,6 +46,18 @@ Set up a bundle-managed Lakeflow job that parses every supported file in the vol
 - **PDFs over 500 pages** are parsed in 500-page `pageRange` slices and stitched into one document (`parse_mode = 'page_range'`). Pages no slice returned are listed in `parse_error`.
 - **Split pages** (`split_pages` on): each page file is parsed once, then each folder's pages are assembled into one document (`parse_mode = 'assembled'`), ordered by the number in the file names, else by the printed page numbers.
 
+## Editing the job's notebooks
+
+The job's tasks are Databricks notebooks, deployed from the bundle's `src/` to its workspace folder: `databricks bundle summary --profile <profile>` shows it as `file_path`. The notebooks are in its `src/`, without the `.py` extension. A user can open one there, change it, and run it by hand by filling in the widgets at the top.
+
+A deploy replaces the workspace copies with the local ones, so to keep a change, export it first:
+
+```bash
+databricks workspace export <file_path>/src/<notebook> --format SOURCE --file <workdir>/<name>-index/src/<notebook>.py --profile <profile>
+```
+
+`.sql` files are workspace files: export them with `--format AUTO`. When `render.py` runs again, it keeps copies that changed since it wrote them, and lists them under `kept_edited`. `--force` replaces them with the skill's version, which loses the change.
+
 ## Verify
 
 ```sql
@@ -66,7 +78,7 @@ WHERE parse_error IS NOT NULL LIMIT 20;
 
 | Symptom | Fix |
 |---|---|
-| `ai_parse_document` not found / VARIANT unsupported | Serverless environment must be ≥ 3 (`environment_version` in `scripts/databricks.yml`; **load** `databricks-serverless`); on classic compute DBR 17.3+ |
+| `ai_parse_document` not found / VARIANT unsupported | Notebook tasks run on the workspace's default serverless environment, which needs to be version 3 or later. Ask a workspace admin to raise the default (**load** `databricks-serverless`); on classic compute DBR 17.3+ |
 | AI function unavailable in region | Check AI Functions region availability (`databricks-ai-functions`); no workaround in-skill |
 | `PERMISSION_DENIED` reading the volume | The job runs as the deployer; needs `READ VOLUME` + `USE CATALOG`/`USE SCHEMA` (**load** `databricks-unity-catalog` `references/6-volumes.md`) |
 | Job never triggers on new files | A `mode: development` target forces triggers to PAUSED (and rejects overriding it), so the template's target has no mode. Check the job's trigger status in the UI, and **load** `databricks-jobs` `references/triggers-schedules.md#file-arrival-trigger` |

@@ -15,7 +15,7 @@ Read this before designing a skill. `check_skill.py` enforces the rules marked (
 ├── SKILL.md              # the orchestrator
 ├── ucs.yaml              # manifest: dependency graph, inputs, catalog entry, facts, gaps
 ├── modules/NN-*.md       # the steps, in order: 00-preflight first, and an NN-evaluate module
-├── scripts/              # what the agent runs or renders: check_base_skills.py, evaluate.py, the ported code
+├── scripts/              # what the agent runs or renders: check_base_skills.py, evaluate.py, the ported code (job code as notebooks)
 └── evals/scenarios.yaml  # end-to-end certification scenarios
 ```
 
@@ -49,8 +49,15 @@ Each module (checked): `# NN · Title`, a one-line purpose, `## Inputs → outpu
 
 ## Scripts
 
-- **Ported code** becomes scripts the agent runs (`uv run <skill>/scripts/x.py --state <workdir>/<state file>`) or templates it renders from the state file. Every setting comes from the state file. No catalog, schema, path, endpoint, or host is hard-coded.
-- **PEP 723 headers** declare each script's dependencies, for Python 3.11 or later.
+- **Ported code** becomes job code the skill deploys, scripts the agent runs (`uv run <skill>/scripts/x.py --state <workdir>/<state file>`), or templates it renders from the state file. Every setting comes from the state file. No catalog, schema, path, endpoint, or host is hard-coded.
+- **Job and training code is a Databricks notebook** (checked), so users can open, run, and edit it in their workspace. `templates/notebook.py` is the skeleton:
+  - line 1 is `# Databricks notebook source`, and `# COMMAND ----------` separates the cells;
+  - a `# MAGIC %md` cell says what it does, a `# MAGIC %pip install -q "<spec>"` cell installs what the serverless environment lacks, and the docstring cell follows;
+  - every setting is a flag in `build_parser()`; `notebook_argv()` reads the same settings from widgets;
+  - the last cell is the guarded run cell, so tests can import it, and it still runs locally through Databricks Connect.
+  The bundle template runs it as a `notebook_task` (`notebook_path: src/<file>.py`), with its flags as `base_parameters` named like each flag's dest. Never a `spark_python_task`.
+- **App code stays a Python module:** a Databricks App's or an agent's code is imported and packaged by the app, which is the platform's practice. List it under a module's `app_scripts`.
+- **The agent's local tools** (`render.py`, `evaluate.py`, `check_base_skills.py`) stay scripts, with PEP 723 headers declaring their dependencies, for Python 3.11 or later.
 - **Jobs run on serverless** unless something needs classic compute. Then say what needs it, as a decision point.
 - **`check_base_skills.py` is shared.** Copy it unchanged (checked).
 - **Reruns are safe.** Process new or changed data only, and don't re-bill AI functions for data already done.

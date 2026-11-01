@@ -53,7 +53,7 @@ modules:
         uses: [file arrival trigger on volumes]
       - name: databricks-serverless
         version: 0.3.2
-        uses: [environment_version]
+        uses: [the default serverless environment version notebook tasks run on]
 
   - id: 02-classify
     file: modules/02-classify.md

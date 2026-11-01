@@ -1,8 +1,24 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Parse documents
+# MAGIC
+# MAGIC The shared Forge parse stage: the first task of a Forge job. It parses new or changed files in a Unity Catalog
+# MAGIC volume with `ai_parse_document`. The job passes its settings as the widgets at the top; to run it by hand, fill
+# MAGIC them in. To keep a change you make here, export this notebook into the bundle's `src/` folder before the next
+# MAGIC deploy, which otherwise replaces it (module 01 of the skill).
+
+# COMMAND ----------
+
+# MAGIC %pip install -q "pypdf>=4"
+
+# COMMAND ----------
+
 """Incrementally parse the documents in a UC volume with ai_parse_document (shared Forge parse stage, module 01).
 
 Every use-case skill that parses documents carries an identical copy of this file and parse.sql;
-tests/test_shared_parse.py fails if the copies drift. Runs as the first task of the skill's job, as a
-serverless ``spark_python_task``, or locally through Databricks Connect:
+tests/test_shared_parse.py fails if the copies drift. It's a Databricks notebook: it runs as the first task
+of the skill's job, as a serverless notebook task whose parameters arrive as widgets, or locally through
+Databricks Connect, with the same settings as flags:
 
     uv run --with "databricks-connect>=17" --with pypdf python parse.py --catalog main --schema docs \
         --prefix contracts --volume-path /Volumes/main/docs/contracts
@@ -35,9 +51,10 @@ PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 SECTION_RE = re.compile(r"^--\s*name:\s*(\w+)\s*$")
 LAST_NUMBER_RE = re.compile(r"(\d+)(?!.*\d)")
 
+# COMMAND ----------
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])  # a notebook has no __doc__
     p.add_argument("--catalog", required=True)
     p.add_argument("--schema", required=True)
     p.add_argument("--prefix", required=True, help="Table prefix: <prefix>_parsed")
@@ -48,7 +65,26 @@ def parse_args() -> argparse.Namespace:
                    help="folder: each folder holds the single-page files of one document")
     p.add_argument("--batch-size", type=int, default=50)
     p.add_argument("--sql-dir", default="", help="Directory holding parse.sql (default: next to this file)")
-    return p.parse_args()
+    return p
+
+
+def notebook_argv(parser: argparse.ArgumentParser) -> list[str]:
+    """The notebook's widgets as command-line flags. A job's notebook task passes each setting as a widget named
+    like its flag (--volume-path is volume_path); a required one left empty is reported as missing."""
+    argv = []
+    for action in parser._actions:  # noqa: SLF001 - argparse has no public list of options
+        if not action.option_strings or action.dest == "help":
+            continue
+        dbutils.widgets.text(action.dest, "" if action.default is None else str(action.default))  # noqa: F821
+        value = dbutils.widgets.get(action.dest)  # noqa: F821 - dbutils exists in Databricks notebooks
+        if value or action.default is not None:
+            argv += [action.option_strings[0], value]
+    return argv
+
+
+def script_dir() -> Path:
+    """This file's folder: next to the script, or a notebook's own workspace folder, its working directory."""
+    return Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 
 
 def sql_string(value: str) -> str:
@@ -103,6 +139,7 @@ def build_params(args: argparse.Namespace) -> dict[str, str]:
         "max_pages": str(MAX_PAGES),
     }
 
+# COMMAND ----------
 
 def page_ranges(page_count: int, limit: int = MAX_PAGES) -> list[str]:
     """1-based pageRange literals covering page_count pages: ['1-500', '501-1000', '1001-1203']."""
@@ -229,6 +266,7 @@ def assemble(files: list[tuple[str, dict | None, str | None]]) -> tuple[dict, st
     stitched["error_status"] = sorted(stitched["error_status"] + failed, key=lambda e: e.get("page_id") or 0)
     return stitched, ordering
 
+# COMMAND ----------
 
 def get_spark():
     if "DATABRICKS_RUNTIME_VERSION" in os.environ:
@@ -240,12 +278,12 @@ def get_spark():
     return DatabricksSession.builder.serverless().getOrCreate()
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     if not re.match(r"^/Volumes/[^/]+/[^/]+/[^/]+", args.volume_path):
         raise ValueError("--volume-path must look like /Volumes/<catalog>/<schema>/<volume>[/subdir]")
     params = build_params(args)
-    sql_dir = Path(args.sql_dir) if args.sql_dir else Path(__file__).resolve().parent
+    sql_dir = Path(args.sql_dir) if args.sql_dir else script_dir()
     sections = load_sections(sql_dir / "parse.sql")
 
     spark = get_spark()
@@ -356,6 +394,8 @@ def main() -> None:
         "documents_skipped": summary.skipped,
     }))
 
+# COMMAND ----------
 
+# As a job's notebook task, the settings arrive as widgets; run as a script, as command-line flags.
 if __name__ == "__main__":
-    main()
+    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)

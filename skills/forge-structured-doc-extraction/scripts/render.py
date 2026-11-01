@@ -7,11 +7,13 @@
     uv run <skill>/scripts/render.py --state <workdir>/extraction.json
 
 Writes <workdir>/<name>-extract/databricks.yml and <name>-extract/src/extraction_config.json, and copies
-the job's scripts to src/ (those copies always track the skill: parse.py and parse.sql are the shared
-Forge parse stage). Validates the document types and schemas with the same rules the job applies.
-Until document_types is recorded (modules 02-03) the job's trigger is rendered PAUSED. Rendered files
-carry a checksum: if one was edited by hand since the last render, nothing is written unless you pass
---force. Prints a JSON summary.
+the job's notebooks, SQL, and init script to src/ (parse.py and parse.sql are the shared Forge parse
+stage). Validates the document types and schemas with the same rules the job applies. Until
+document_types is recorded (modules 02-03) the job's trigger is rendered PAUSED. Rendered files carry a
+checksum: if one was edited by hand since the last render, nothing is written unless you pass --force.
+Copied files carry a checksum line too, but an edited copy (for example a notebook changed in the
+workspace and exported back into src/) is kept and listed under kept_edited; --force replaces it with
+the skill's version. Prints a JSON summary.
 
 With review_app on (module 07) and the app scaffolded in <workdir>/<review.app_name>/, it also copies the
 review app's server and client files there and sets the app's table names in its app.yaml.
@@ -31,6 +33,7 @@ import yaml  # noqa: E402
 from extract import LAYOUTS, NAME_RE, validate_config  # noqa: E402  (same validation the extract task applies)
 
 SCRIPTS = Path(__file__).resolve().parent
+SKILL = "forge-structured-doc-extraction"
 BUNDLE_NAME_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 VOLUME_RE = re.compile(r"^/Volumes/[^/]+/[^/]+/[^/]+")
 WHOLE_SCALAR_RE = re.compile(r"(?m)^(\s*[\w-]+:[ \t]*)<([a-z_]+)>[ \t]*$")
@@ -54,12 +57,16 @@ APP_FILES = {  # review app file in scripts/review-app -> where it goes in the s
 APP_HEADER = ("// Copied by forge-structured-doc-extraction render.py (sha256:{digest}). Change the skill's "
               "scripts/review-app copy and re-render.")
 APP_HEADER_RE = re.compile(r"^// Copied by forge-structured-doc-extraction render\.py \(sha256:([0-9a-f]{12})\)")
+COPY_MARK = ("{comment} Copied from " + SKILL + " by render.py (sha256:{digest}). Edits are kept when you render "
+             "again; render.py --force replaces them.")
+COPY_MARK_RE = re.compile(r"^(?:#|--) Copied from [\w-]+ by render\.py \(sha256:([0-9a-f]{12})\)")
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--state", required=True, type=Path, help="<workdir>/extraction.json")
-    p.add_argument("--force", action="store_true", help="Overwrite rendered files even if they were edited by hand")
+    p.add_argument("--force", action="store_true",
+                   help="Overwrite rendered files edited by hand, and replace edited copies of the job's files")
     return p.parse_args()
 
 
@@ -177,6 +184,27 @@ def edited_by_hand(path: Path) -> bool:
     return not match or digest(rest) != match.group(1)
 
 
+def mark_copy(name: str, text: str) -> str:
+    """A job file as render.py copies it: with a line recording its checksum, after a notebook header or a shebang.
+    In a notebook the line gets a cell of its own, so the first cell stays markdown."""
+    lines = text.splitlines(keepends=True)
+    notebook = bool(lines) and lines[0].startswith("# Databricks notebook source")
+    at = 1 if lines and (notebook or lines[0].startswith("#!")) else 0
+    if notebook:
+        lines[1:1] = ["\n", "# COMMAND ----------\n", "\n"]
+    mark = COPY_MARK.format(comment="--" if name.endswith(".sql") else "#", digest=digest("".join(lines))) + "\n"
+    return "".join(lines[:at] + [mark] + lines[at:])
+
+
+def copy_edited(path: Path) -> bool:
+    """True when a copy changed since render.py wrote it. A copy without the line, from an older render.py, is replaced."""
+    lines = path.read_text().splitlines(keepends=True)
+    for i, line in enumerate(lines[:2]):
+        if match := COPY_MARK_RE.match(line):
+            return digest("".join(lines[:i] + lines[i + 1:])) != match.group(1)
+    return False
+
+
 def render_bundle(state: dict) -> str:
     localize = state.get("localize") is True
     review = (state.get("review") or {}) if state.get("review_app") is True else {}
@@ -259,6 +287,11 @@ def render_bundle(state: dict) -> str:
         raise SystemExit(f"Rendered databricks.yml doesn't round-trip {mismatched}")
     if list(tasks) != ["parse", "extract"] + (["localize"] if localize else []) + (["review_queue"] if queue else []):
         raise SystemExit(f"Rendered databricks.yml has tasks {list(tasks)}")
+    notebook_tasks = [t for jobs in parsed["resources"]["jobs"].values() for t in jobs["tasks"] if "pipeline_task" not in t]
+    for task in notebook_tasks:  # every job task runs one of the notebooks render.py copies
+        path = (task.get("notebook_task") or {}).get("notebook_path", "")
+        if not path.startswith("src/") or path[4:] not in JOB_FILES + LOCALIZE_FILES or not path.endswith(".py"):
+            raise SystemExit(f"Rendered databricks.yml task {task['task_key']} isn't a notebook task on a copied notebook")
     if sorted(parsed["resources"]["jobs"]) != sorted(["doc_extraction"] + (["review_sync"] if review_sync else [])):
         raise SystemExit(f"Rendered databricks.yml has jobs {sorted(parsed['resources']['jobs'])}")
     if cron and (job.get("schedule") or {}).get("quartz_cron_expression") != cron:
@@ -306,7 +339,8 @@ def main() -> None:
         bundle / "src" / "extraction_config.json": config_json(job_config(state)),
     }
     names = JOB_FILES + (LOCALIZE_FILES if state.get("localize") is True else [])
-    copies = {bundle / "src" / name: (SCRIPTS / name).read_text() for name in names}
+    job_copies = {bundle / "src" / name: mark_copy(name, (SCRIPTS / name).read_text()) for name in names}
+    copies = {}
     review = {}
     if state.get("review_app") is True:
         app_files, app = render_app(state, workdir)
@@ -320,8 +354,12 @@ def main() -> None:
             f"Edited by hand since the last render: {conflicts}. Move the change into extraction.json and "
             "re-render, or pass --force to overwrite (the hand edit is lost)."
         )
-    summary = {"written": [], "unchanged": []} | ({"review": review} if review else {})
-    for path, text in {**rendered, **copies}.items():
+    summary = {"written": [], "unchanged": [], "kept_edited": []} | ({"review": review} if review else {})
+    for path, text in list(job_copies.items()):
+        if path.exists() and path.read_text() != text and copy_edited(path) and not args.force:
+            summary["kept_edited"].append(str(path))  # a change exported from the workspace, say; --force replaces it
+            del job_copies[path]
+    for path, text in {**rendered, **job_copies, **copies}.items():
         if path.exists() and path.read_text() == text:
             summary["unchanged"].append(str(path))
             continue

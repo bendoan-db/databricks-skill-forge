@@ -1,17 +1,38 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Sync the search index
+# MAGIC
+# MAGIC The `sync_index` task of the forge-unstructured-doc-extraction index job: it creates the AI Search index over
+# MAGIC the chunks table, or syncs it, and waits until every chunk is indexed. The job passes its settings as the
+# MAGIC widgets at the top; to run it by hand, fill them in. To keep a change you make here, export this notebook into
+# MAGIC the bundle's `src/` folder before the next deploy, which otherwise replaces it (module 01).
+
+# COMMAND ----------
+
+# MAGIC %pip install -q "databricks-sdk>=0.124.0"
+
+# COMMAND ----------
+
 """Create or sync the AI Search Delta Sync index over the chunks table (forge-unstructured-doc-extraction module 02).
 
-Last task of the index job, after prep_chunks.py. The endpoint must already exist; module 02 creates
-it after the user confirms. The task waits until the index serves every row in the chunks table, so
-the job only succeeds once retrieval sees the new documents.
+Last task of the index job, after prep_chunks.py. It's a Databricks notebook: it runs as a serverless notebook
+task whose parameters arrive as widgets, or locally, with the same settings as flags. The endpoint must
+already exist; module 02 creates it after the user confirms. The task waits until the index serves every row
+in the chunks table, so the job only succeeds once retrieval sees the new documents.
 """
 
-import argparse
-import os
-import time
+if "dbutils" in globals():  # in a notebook, load the SDK version %pip installed rather than the preinstalled one
+    dbutils.library.restartPython()  # noqa: F821
 
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.errors import DatabricksError, NotFound
-from databricks.sdk.service.vectorsearch import (
+# COMMAND ----------
+
+import argparse  # noqa: E402 - after the restart cell, as a notebook needs
+import os  # noqa: E402
+import time  # noqa: E402
+
+from databricks.sdk import WorkspaceClient  # noqa: E402
+from databricks.sdk.errors import DatabricksError, NotFound  # noqa: E402
+from databricks.sdk.service.vectorsearch import (  # noqa: E402
     DeltaSyncVectorIndexSpecRequest,
     EmbeddingSourceColumn,
     EndpointStatusState,
@@ -22,17 +43,33 @@ from databricks.sdk.service.vectorsearch import (
 BASE_SYNC_COLUMNS = ["chunk_id", "source_uri", "file_name", "chunk_position", "page_numbers"]
 POLL_SECONDS = 30
 
+# COMMAND ----------
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])  # a notebook has no __doc__
     p.add_argument("--chunks-table", required=True, help="<catalog>.<schema>.<prefix>_chunks")
     p.add_argument("--index-name", required=True, help="<catalog>.<schema>.<index_name>")
     p.add_argument("--endpoint", required=True)
     p.add_argument("--embedding-model", required=True, help="Embedding serving endpoint name")
     p.add_argument("--metadata-columns", default="", help="Comma-separated metadata columns to sync")
     p.add_argument("--timeout-minutes", type=int, default=90)
-    return p.parse_args()
+    return p
 
+
+def notebook_argv(parser: argparse.ArgumentParser) -> list[str]:
+    """The notebook's widgets as command-line flags. A job's notebook task passes each setting as a widget named
+    like its flag (--volume-path is volume_path); a required one left empty is reported as missing."""
+    argv = []
+    for action in parser._actions:  # noqa: SLF001 - argparse has no public list of options
+        if not action.option_strings or action.dest == "help":
+            continue
+        dbutils.widgets.text(action.dest, "" if action.default is None else str(action.default))  # noqa: F821
+        value = dbutils.widgets.get(action.dest)  # noqa: F821 - dbutils exists in Databricks notebooks
+        if value or action.default is not None:
+            argv += [action.option_strings[0], value]
+    return argv
+
+# COMMAND ----------
 
 def source_row_count(table: str) -> int:
     if "DATABRICKS_RUNTIME_VERSION" in os.environ:
@@ -68,8 +105,8 @@ def source_table(index) -> str | None:
     return getattr(spec, "source_table", None)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     deadline = time.time() + args.timeout_minutes * 60
     w = WorkspaceClient()
     wait_for_endpoint(w, args.endpoint, deadline)
@@ -125,6 +162,8 @@ def main() -> None:
         print(f"indexed {indexed}/{expected} rows; ready={status.ready if status else None}")
         time.sleep(POLL_SECONDS)
 
+# COMMAND ----------
 
+# As a job's notebook task, the settings arrive as widgets; run as a script, as command-line flags.
 if __name__ == "__main__":
-    main()
+    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)

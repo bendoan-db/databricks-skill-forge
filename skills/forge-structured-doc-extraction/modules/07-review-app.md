@@ -21,7 +21,7 @@ Only when the user said yes to the review app in module 00 (`review_app` is `tru
  (confidence < review_threshold)                                                               │ app reads
 reviewer ─► app ─► Postgres <prefix>_review.<prefix>_decisions ══ Lakehouse Sync ══► lb_<prefix>_decisions_history
                                                                      table update trigger ─► review_sync job
-                    <prefix>_decisions ◄── extract.py --stage decisions ──► typed tables (in place)
+                    <prefix>_decisions ◄── extract notebook, stage decisions ──► typed tables (in place)
 ```
 
 - **The queue is the review view's low-confidence values.** Each run of the extraction job merges them into `<prefix>_review_candidates`. Its `review_queue` task then refreshes the synced copy the app reads.

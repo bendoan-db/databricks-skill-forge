@@ -187,6 +187,21 @@ def test_render_packet_job_with_localization(tmp_path: Path):
     config = json.loads((bundle / "src" / "extraction_config.json").read_text())
     assert config["document_types"] == STATE["document_types"] and config["review_threshold"] == 0.8
     assert {"localize.py", "localize.sql", "install_tesseract.sh"} <= {p.name for p in (bundle / "src").iterdir()}
+    assert "environments" not in job  # notebook tasks take no job environment; parse.py installs pypdf itself
+    tasks = {t["task_key"]: t for t in job["tasks"]}
+    assert tasks["localize"]["job_cluster_key"] == "ocr" and tasks["localize"]["libraries"]
+    jobs_params = {p["name"] for p in job["parameters"]}
+    for task in tasks.values():
+        notebook = task["notebook_task"]["notebook_path"]
+        script = notebook.removeprefix("src/").removesuffix(".py")
+        parser = load_script(SKILL, script).build_parser()
+        dests = {a.dest for a in parser._actions if a.option_strings and a.dest != "help"}
+        given = set(task["notebook_task"]["base_parameters"])
+        assert given <= dests, f"{script}: base_parameters {sorted(given - dests)} aren't widgets it reads"
+        required = {a.dest for a in parser._actions if a.required}
+        assert required <= given | jobs_params, f"{script}: no value for {sorted(required - given)}"
+        copied = (bundle / notebook).read_text().splitlines()
+        assert copied[0] == "# Databricks notebook source" and copied[1].startswith("# Copied from " + SKILL)
 
 
 def test_render_without_types_pauses_the_trigger_and_drops_localize(tmp_path: Path):
@@ -353,8 +368,9 @@ def test_render_review_queue_and_sync_jobs(tmp_path: Path):
     assert bundle["variables"]["history_table"]["default"] == "main.loans.lb_loan_docs_decisions_history"
     assert sync["trigger"]["table_update"]["table_names"] == ["${var.history_table}"]
     assert sync["trigger"]["table_update"]["wait_after_last_change_seconds"] > 60
-    args = sync["tasks"][0]["spark_python_task"]["parameters"]
-    assert args[args.index("--stage") + 1] == "decisions" and args[args.index("--history-table") + 1] == "${var.history_table}"
+    params = sync["tasks"][0]["notebook_task"]["base_parameters"]
+    assert params["stage"] == "decisions" and params["history_table"] == "${var.history_table}"
+    assert sync["tasks"][0]["notebook_task"]["notebook_path"] == "src/extract.py" and "environments" not in sync
 
 
 def test_render_without_review_app_leaves_out_its_jobs(tmp_path: Path):
@@ -407,3 +423,48 @@ def test_review_app_and_pipeline_agree():
     queue_ddl = sections["create_candidates_table"]
     assert set(re.findall(r"\bq\.([a-z_]+)", routes)) <= set(re.findall(r"^\s+([a-z_]+) [A-Z]", queue_ddl, re.MULTILINE))
     assert set(re.findall(r"tableName\('(\w+)'\)", routes)) == {"REVIEW_QUEUE_TABLE", "REVIEW_DECISIONS_TABLE"}
+
+
+# --- notebooks (the job's tasks) -------------------------------------------------------------------------
+
+class FakeWidgets:
+    """Stand-in for dbutils.widgets: a notebook task's parameters, keyed by widget name."""
+
+    def __init__(self, values: dict[str, str]):
+        self.values = values
+
+    def text(self, name: str, default: str) -> None:
+        self.values.setdefault(name, default)
+
+    def get(self, name: str) -> str:
+        return self.values[name]
+
+
+def test_extract_notebook_reads_its_settings_from_widgets():
+    extract.dbutils = type("FakeDbutils", (), {"widgets": FakeWidgets({
+        "catalog": "main", "schema": "loans", "prefix": "loan_docs", "config": "/Workspace/x/extraction_config.json",
+        "full_refresh": "true", "stage": "decisions", "history_table": "main.loans.lb_loan_docs_decisions_history"})})()
+    try:
+        args = extract.build_parser().parse_args(extract.notebook_argv(extract.build_parser()))
+    finally:
+        del extract.dbutils
+    assert (args.stage, args.full_refresh, args.batch_size) == ("decisions", "true", 25)
+    assert args.config == Path("/Workspace/x/extraction_config.json") and args.sql_dir == ""
+
+
+def test_render_keeps_edited_copies_of_the_job_files(tmp_path: Path):
+    state = write_state(tmp_path)
+    render("--state", str(state))
+    src = tmp_path / "loan-docs-extract" / "src"
+    notebook, sql = src / "extract.py", src / "extract.sql"
+    assert sql.read_text().startswith("-- Copied from " + SKILL)
+    notebook.write_text(notebook.read_text() + "\n# COMMAND ----------\n\nprint('edited in the workspace')\n")
+    summary = json.loads(render("--state", str(state)).stdout)
+    assert summary["kept_edited"] == [str(notebook)] and "edited in the workspace" in notebook.read_text()
+
+    sql.write_text((SCRIPTS / "extract.sql").read_text())  # a copy from an older render.py, without the line
+    summary = json.loads(render("--state", str(state)).stdout)
+    assert str(sql) in summary["written"] and sql.read_text().startswith("-- Copied from " + SKILL)
+
+    summary = json.loads(render("--state", str(state), "--force").stdout)
+    assert summary["kept_edited"] == [] and "edited in the workspace" not in notebook.read_text()

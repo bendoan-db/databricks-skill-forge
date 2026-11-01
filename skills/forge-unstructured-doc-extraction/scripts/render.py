@@ -7,9 +7,11 @@
     uv run <skill>/scripts/render.py --state <workdir>/doc-index.json
 
 Writes <workdir>/<name>-index/databricks.yml with every value from doc-index.json, and copies the job's
-scripts to its src/ (those copies always track the skill: parse.py and parse.sql are the shared Forge
-parse stage). The rendered file starts with a checksum header: if it was edited by hand since the last
-render, nothing is written unless you pass --force. Prints a JSON summary.
+notebooks and SQL files to its src/ (parse.py and parse.sql are the shared Forge parse stage). The rendered
+file starts with a checksum header: if it was edited by hand since the last render, nothing is written
+unless you pass --force. Each copy carries a checksum line too: a copy changed since it was written, such
+as a notebook edited in the workspace and exported back (module 01), is kept and listed under kept_edited,
+and --force replaces it with the skill's version. Prints a JSON summary.
 """
 
 import argparse
@@ -25,6 +27,7 @@ import yaml  # noqa: E402
 
 from prep_chunks import NAME_RE, metadata_columns  # noqa: E402  (same validation the chunk task applies)
 
+SKILL = "forge-unstructured-doc-extraction"
 SCRIPTS = Path(__file__).resolve().parent
 BUNDLE_NAME_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 INDEX_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,255}$")
@@ -35,12 +38,17 @@ HEADER_RE = re.compile(r"^# Rendered by forge-unstructured-doc-extraction render
 JOB_FILES = ["parse.py", "parse.sql", "prep_chunks.py", "prep_chunks.sql", "sync_index.py"]
 CHART_ELEMENT_TYPES = ("*", "figure")  # chart insights read the figure descriptions ai_parse_document writes
 TRIGGER_BLOCK_RE = re.compile(r"(?ms)^      trigger:.*?\n.*?wait_after_last_change_seconds: \d+\n")
+TASK_NOTEBOOKS = {"parse": "src/parse.py", "chunk": "src/prep_chunks.py", "sync_index": "src/sync_index.py"}
+COPY_MARK = ("{comment} Copied from " + SKILL + " by render.py (sha256:{digest}). Edits are kept when you render "
+             "again; render.py --force replaces them.")
+COPY_MARK_RE = re.compile(r"^(?:#|--) Copied from [\w-]+ by render\.py \(sha256:([0-9a-f]{12})\)")
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--state", required=True, type=Path, help="<workdir>/doc-index.json")
-    p.add_argument("--force", action="store_true", help="Overwrite rendered files even if they were edited by hand")
+    p.add_argument("--force", action="store_true",
+                   help="Overwrite rendered files edited by hand, and replace edited copies of the job's files")
     return p.parse_args()
 
 
@@ -79,14 +87,39 @@ def metadata(state: dict) -> tuple[str, dict[str, str]]:
         raise SystemExit(f"metadata_schema: {e}") from None
 
 
+def digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
 def with_header(body: str) -> str:
-    return HEADER.format(digest=hashlib.sha256(body.encode()).hexdigest()[:12]) + "\n" + body
+    return HEADER.format(digest=digest(body)) + "\n" + body
 
 
 def edited_by_hand(path: Path) -> bool:
     first, _, rest = path.read_text().partition("\n")
     match = HEADER_RE.match(first)
-    return not match or hashlib.sha256(rest.encode()).hexdigest()[:12] != match.group(1)
+    return not match or digest(rest) != match.group(1)
+
+
+def mark_copy(name: str, text: str) -> str:
+    """A job file as render.py copies it: with a line recording its checksum, after a notebook header or a shebang.
+    In a notebook the line gets a cell of its own, so the first cell stays markdown."""
+    lines = text.splitlines(keepends=True)
+    notebook = bool(lines) and lines[0].startswith("# Databricks notebook source")
+    at = 1 if lines and (notebook or lines[0].startswith("#!")) else 0
+    if notebook:
+        lines[1:1] = ["\n", "# COMMAND ----------\n", "\n"]
+    mark = COPY_MARK.format(comment="--" if name.endswith(".sql") else "#", digest=digest("".join(lines))) + "\n"
+    return "".join(lines[:at] + [mark] + lines[at:])
+
+
+def copy_edited(path: Path) -> bool:
+    """True when a copy changed since render.py wrote it. A copy without the line, from an older render.py, is replaced."""
+    lines = path.read_text().splitlines(keepends=True)
+    for i, line in enumerate(lines[:2]):
+        if match := COPY_MARK_RE.match(line):
+            return digest("".join(lines[:i] + lines[i + 1:])) != match.group(1)
+    return False
 
 
 def render_bundle(state: dict) -> str:
@@ -157,6 +190,9 @@ def render_bundle(state: dict) -> str:
         raise SystemExit("Rendered databricks.yml doesn't carry schedule_cron")
     if not state["continuous_updates"] and ("trigger" in job or "schedule" in job):
         raise SystemExit("Rendered databricks.yml still has a trigger, but continuous_updates is false")
+    notebooks = {t["task_key"]: (t.get("notebook_task") or {}).get("notebook_path") for t in job["tasks"]}
+    if notebooks != TASK_NOTEBOOKS:
+        raise SystemExit(f"Rendered databricks.yml has tasks {notebooks}, not notebook tasks {TASK_NOTEBOOKS}")
     return body
 
 
@@ -165,7 +201,7 @@ def main() -> None:
     state = load_state(args.state)
     bundle = args.state.resolve().parent / f"{state['name']}-index"
     rendered = {bundle / "databricks.yml": with_header(render_bundle(state))}
-    copies = {bundle / "src" / name: (SCRIPTS / name).read_text() for name in JOB_FILES}
+    copies = {bundle / "src" / name: mark_copy(name, (SCRIPTS / name).read_text()) for name in JOB_FILES}
 
     conflicts = [str(p) for p, text in rendered.items() if p.exists() and p.read_text() != text and edited_by_hand(p)]
     if conflicts and not args.force:
@@ -173,10 +209,13 @@ def main() -> None:
             f"Edited by hand since the last render: {conflicts}. Move the change into doc-index.json and re-render, "
             "or pass --force to overwrite (the hand edit is lost)."
         )
-    summary = {"written": [], "unchanged": []}
+    summary = {"written": [], "unchanged": [], "kept_edited": []}
     for path, text in {**rendered, **copies}.items():
         if path.exists() and path.read_text() == text:
             summary["unchanged"].append(str(path))
+            continue
+        if path in copies and path.exists() and copy_edited(path) and not args.force:
+            summary["kept_edited"].append(str(path))  # an edit, maybe exported from the workspace: keep it
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
