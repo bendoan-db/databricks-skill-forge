@@ -342,7 +342,7 @@ def test_render_template_copies_like_the_pipeline_skills():
 
     template = parts(SMITH / "templates" / "render.py")
     assert len(template) == 5
-    for skill in ("forge-structured-doc-extraction", "forge-unstructured-doc-extraction"):
+    for skill in ("forge-structured-doc-extraction", "forge-unstructured-doc-extraction", "forge-evaluate-guardrails"):
         assert parts(SKILLS_DIR / skill / "scripts" / "render.py") == template, f"{skill}/scripts/render.py"
 
 

@@ -1,0 +1,81 @@
+# End-to-end certification scenarios for forge-evaluate-guardrails.
+# forge_ucs_validate runs these on every PR, and forge_ucs_drift runs them on each base release.
+# Each run executes the modules in a sandbox workspace twice: with this skill (candidate) and with
+# base skills only (base-only). The candidate must pass every check and must not score below base-only.
+# The sandbox needs the Unity Gateway Service Policies preview enabled.
+
+defaults:
+  harness:
+    entry: forge                             # each run starts as `/forge <scenario description>`; routing evals are in skills/forge/evals/routing.yaml
+    auto_approve_cost_gates: sandbox_only    # never auto-approve outside the certification workspace
+    teardown: [job, tables, datasets_volume, model_service]
+    upstream_versions: [v0.2.27, latest]     # databricks-agent-skills installed next to the skill: ucs.yaml upstream_min, and the newest tag
+  thresholds:                                # same floors as scripts/evaluate.py THRESHOLDS
+    scored_rate: 0.98
+  checks:                                    # apply to every scenario, in addition to its own checks
+    - no_knowledge_assistant
+    - no_information_extraction
+    - no_prompt_text_in_report               # the report shows counts, rates, and category names, not the harmful prompts
+    - dedicated_model_service                # guardrails are attached only to the service the skill created
+
+scenarios:
+  - id: default-datasets-sample
+    description: No dataset of the user's; both default datasets, all three built-in guardrails, a sample run
+    inputs:
+      target_schema: <sandbox catalog>.guardrail_eval
+      dataset: none
+      licenses_approved: [aegis2, toxicchat]
+    checks:
+      - prompts.aegis2 == 1914 and prompts.aegis2_block == 1030
+      - prompts.toxicchat == 4972 and prompts.toxicchat_block == 354
+      - live_policies == [sensitive_data_detection, unsafe_content_detection, jailbreak_detection]
+      - guardrail_service_check passes
+      - sample_run.prompts == 400 and sample_run.scored_rate >= thresholds.scored_rate
+
+  - id: default-datasets-full
+    description: A full run on both default datasets, scored and reported
+    depends_on: default-datasets-sample
+    checks:
+      - full_run.n == prompts.total
+      - full_run.scored_rate >= thresholds.scored_rate
+      - metrics has overall, dataset, category, and policy rows
+      - mlflow_run tagged eval_run_id == full_run.run_id
+      - evaluate.py exit == 0
+
+  - id: one-guardrail
+    description: Only Unsafe Content attached, to measure its recall alone, on Aegis 2.0
+    inputs:
+      dataset: none
+      licenses_approved: [aegis2]
+      guardrails: [unsafe_content]
+    checks:
+      - prompts.datasets == [aegis2]          # ToxicChat left out without its license approved
+      - live_policies == [unsafe_content_detection]
+      - every blocking_policy in results is unsafe_content_detection
+
+  - id: user-table
+    description: The user's own labeled table, with custom column names and label values
+    source:
+      generate: >-
+        a table of 60 prompts: 30 harmful (label 'deny') and 30 ordinary customer-support questions (label 'ok'),
+        columns question, verdict, topic
+    inputs:
+      dataset: "<sandbox>.guardrail_eval.support_prompts (prompt question, label verdict, block 'deny', category topic)"
+    checks:
+      - prompts.custom == 60 and prompts.custom_block == 30
+      - category rows per topic in the metrics
+
+  - id: resume
+    description: A full run cancelled partway resumes from its run_id without sending a prompt twice
+    depends_on: default-datasets-sample
+    steps: [start a full run, cancel it after its first batch, rerun with the run_id]
+    checks:
+      - results rows for the run_id == prompts.total
+      - no prompt_id twice for the run_id
+
+  - id: no-egress
+    description: Serverless without egress to huggingface.co; the files are staged by hand
+    steps: [block egress, stage both files with databricks fs cp, run load_prompts]
+    checks:
+      - load_prompts succeeds without downloading
+      - a staged file with a wrong checksum fails with "has sha256 …, not …", and nothing is downloaded over it

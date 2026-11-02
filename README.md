@@ -52,10 +52,11 @@ Each use-case skill provides:
 
 | Skill | Version | What it builds |
 |---|---|---|
-| [`forge`](skills/forge/SKILL.md) | 0.2.0 | The entry point. It matches your request to one of the use-case skills below and hands off to it, resumes a build already in the working directory, and points to a base skill when no use case fits, or to `forge-smith` to build a new use case. It builds nothing itself. |
+| [`forge`](skills/forge/SKILL.md) | 0.3.0 | The entry point. It matches your request to one of the use-case skills below and hands off to it, resumes a build already in the working directory, and points to a base skill when no use case fits, or to `forge-smith` to build a new use case. It builds nothing itself. |
 | [`forge-unstructured-doc-extraction`](skills/forge-unstructured-doc-extraction/SKILL.md) | 0.1.0 | An AI Search index over the files in a Unity Catalog volume (PDF, DOCX, PPTX, images), for an agent or app to query. It parses with `ai_parse_document`, chunks with `ai_prep_search` (document-level metadata filters, optional chart readings by a vision model), keeps the index fresh as files arrive, and scores retrieval (document and page hit rates) in MLflow. |
 | [`forge-doc-qa-agent`](skills/forge-doc-qa-agent/SKILL.md) | 0.4.0 | A document Q&A (RAG) agent that cites its sources: a LangGraph agent on Databricks Apps (Agent Runtime) that searches a `forge-unstructured-doc-extraction` index, evaluated with MLflow judges. It runs `forge-unstructured-doc-extraction` first when the documents aren't indexed yet. Default model: Claude Sonnet 5.5 (`system.ai.claude-sonnet-5-5`). |
 | [`forge-structured-doc-extraction`](skills/forge-structured-doc-extraction/SKILL.md) | 0.3.0 | Typed Delta tables of the fields in a volume's documents, with a confidence score and citation for every value. It classifies mixed documents and splits multi-document packets (loan or claim files) with `ai_classify`, extracts per document type with `ai_extract`, keeps a review queue of low-confidence values, scores accuracy against labeled documents in MLflow, and can find word-level boxes for each value with OCR. An optional review app (AppKit on Lakebase) lets people approve or correct the queued values, and writes their decisions back to the tables. |
+| [`forge-evaluate-guardrails`](skills/forge-evaluate-guardrails/SKILL.md) | 0.1.0 | How well Unity AI Gateway's built-in guardrails (Sensitive Data Detection, Unsafe Content, Jailbreak) block unsafe prompts and let safe ones through, on your labeled prompts or, by default, the Aegis 2.0 and ToxicChat test sets. It attaches the guardrails to a model service of its own, sends every prompt through the gateway from a Databricks job, records which guardrail blocked each one, and scores recall, precision, false-positive rate, and F1 overall, per dataset, per harm category, and per guardrail, in Delta tables and MLflow. |
 | [`forge-smith`](skills/forge-smith/SKILL.md) | 0.1.0 | A new use-case skill, built from an existing codebase (a repo or folder of notebooks, SQL, jobs, apps, and bundles). It scans the code for its stages, platform features, and settings; designs the modules, each loading the base skill it needs; writes the preflight discovery questions the new skill asks its user; and generates the skill and checks it against Forge's rules. It reads the code and never runs it. |
 
 [MANIFEST.md](MANIFEST.md) lists each skill's inputs and outputs.
@@ -68,7 +69,7 @@ Each use-case skill provides:
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 - macOS or Linux with `bash`, `curl`, and `tar`; or Windows 10 (1803) or later with PowerShell 5.1 or 7.
 - The Databricks Agent Skills (v0.2.27 or later), as skill folders in the same skills directory as `forge` and the use-case skills. The installer sets this up.
-- A Unity Catalog workspace with serverless compute, and permission to create jobs. `forge-unstructured-doc-extraction` also needs AI Search endpoints (or an existing endpoint), and `forge-doc-qa-agent` needs Databricks Apps. Word-level localization in `forge-structured-doc-extraction` needs a classic job cluster, and its review app needs Lakebase, Databricks Apps, Node.js 20+, and psql. Each skill checks the exact privileges during preflight.
+- A Unity Catalog workspace with serverless compute, and permission to create jobs. `forge-unstructured-doc-extraction` also needs AI Search endpoints (or an existing endpoint), and `forge-doc-qa-agent` needs Databricks Apps. Word-level localization in `forge-structured-doc-extraction` needs a classic job cluster, and its review app needs Lakebase, Databricks Apps, Node.js 20+, and psql. `forge-evaluate-guardrails` needs the Unity Gateway Service Policies preview, which a workspace admin enables, and egress to huggingface.co for its default datasets. Each skill checks the exact privileges during preflight.
 
 Each skill installs anything else it needs during preflight. For example, `forge-doc-qa-agent` installs the Agent Bricks CLI (`databricks-agentbricks`).
 
@@ -196,6 +197,21 @@ The agent asks before deploying the app, and shares it only with the people you 
 
 The agent asks before parsing, extracting, re-extracting, starting the OCR cluster, or creating any of the review app's resources, and treats extracted values as sensitive in its reports. Settings are saved to `extraction.json` in the working directory, and the job is `<name>-extract/`. After setup, new files in the volume are processed on arrival.
 
+### Guardrail evaluation
+
+> /forge How well do the AI Gateway guardrails block jailbreaks and toxic prompts? Measure them on a safety dataset.
+
+`forge-evaluate-guardrails` runs these modules in order:
+
+| # | Module | Result |
+|---|---|---|
+| 00 | Preflight | Your target schema and dataset (yours, or Aegis 2.0 and ToxicChat, with their licenses stated), base skills checked, the Service Policies preview confirmed, your go-ahead on cost |
+| 01 | Dataset | A bundle-managed job, and the prompts loaded into one table, each labeled BLOCK or ALLOW |
+| 02 | Guardrails | A model service of the evaluation's own, with the built-in guardrails attached, and a pass check and a block check |
+| 03 | Evaluate | A sample run, then a full run, gated on at least 98% of prompts scored, and the report: recall, precision, false-positive rate, and F1 overall, per dataset, per category, and per guardrail, in MLflow |
+
+The agent asks before creating the model service, attaching its guardrails, and each evaluation run, and keeps the prompts, which are harmful by design, out of its reports. Settings are saved to `guardrail-eval.json`, and the job is `<name>/`.
+
 ### Build your own use case
 
 Invoke `forge-smith` with the code that already implements the solution, for example `/forge-smith turn github.com/acme/claims-accelerator into a use-case skill`. The skill it builds deploys its job and training code as Databricks notebooks, which its users can edit in their workspace, and keeps app code as Python modules. It works through six modules, and you approve the design and the questions before it writes anything:
@@ -225,6 +241,7 @@ databricks-skill-forge/
 │   │   └── ucs.yaml       # manifest: version, catalog entry for forge, base-skill dependencies, shared files, known gaps, tracked facts
 │   ├── forge-doc-qa-agent/                # same layout
 │   ├── forge-structured-doc-extraction/   # same layout
+│   ├── forge-evaluate-guardrails/         # same layout
 │   └── forge-smith/       # builder: scan.py, scaffold.py, check_skill.py, and templates; turns a codebase into a use-case skill
 ├── docs/                  # maintainer notes; not part of any published skill
 ├── install.sh, install.ps1  # installers (macOS/Linux, Windows): base skills and MCP server through AI Dev Kit, then Forge

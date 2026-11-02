@@ -82,6 +82,14 @@ cases:
     workdir_files: [extraction.json]
     expect: {handoff: forge-structured-doc-extraction, resume: true}
 
+  # Guardrail evaluation
+  - prompt: "/forge How well do the AI Gateway guardrails block jailbreaks and toxic prompts? Measure it on a safety dataset"
+    expect: {handoff: forge-evaluate-guardrails}
+  - prompt: "/forge Evaluate the built-in service policies on our model service with our own red-team prompts in main.safety.redteam"
+    expect: {handoff: forge-evaluate-guardrails}
+  - prompt: "/forge guardrail evaluation"
+    expect: {handoff: forge-evaluate-guardrails}
+
   # No use case: point to a base skill
   - prompt: "/forge Create a vector search index on main.sales.products for semantic product search"
     expect: {point_to: databricks-vector-search}
@@ -93,6 +101,8 @@ cases:
     expect: {point_to: databricks-ml-training}
   - prompt: "/forge Build a sales dashboard on main.sales.orders"
     expect: {point_to: databricks-aibi-dashboards}
+  - prompt: "/forge Add rate limits and a budget to our model service in AI Gateway"
+    expect: {point_to: databricks-unity-gateway}
   - prompt: "/forge Turn the notebooks in github.com/acme/claims-accelerator into a Forge use-case skill"
     expect: {point_to: forge-smith}
   - prompt: "/forge I have a repo that builds our churn scoring pipeline; make a reusable skill from it"

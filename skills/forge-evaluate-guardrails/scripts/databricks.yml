@@ -1,0 +1,60 @@
+# Template for the guardrail evaluation job of the forge-evaluate-guardrails use-case skill (modules 01, 03).
+# Don't fill it by hand: `render.py` writes <name>/databricks.yml from guardrail-eval.json, replacing each whole-value
+# <key> with a quoted value, writes src/eval_config.json, and copies the job's notebooks to src/.
+# Each task is a notebook task: base_parameters reach the notebook as widgets named like its flags, the job's mode and
+# run_id parameters reach run_eval the same way, and each notebook installs its own packages with %pip, so the job has
+# no environment. There's no trigger: the agent runs the job, a sample first and then the full dataset.
+bundle:
+  name: <bundle_name>
+
+variables:
+  catalog:
+    description: Catalog for the tables, the volume, and the model service
+    default: <catalog>
+  schema:
+    description: Schema for the tables, the volume, and the model service
+    default: <schema>
+  prefix:
+    description: Table prefix (<prefix>_prompts, <prefix>_results, <prefix>_metrics, volume <prefix>_datasets)
+    default: <prefix>
+
+resources:
+  jobs:
+    guardrail_eval:
+      name: guardrail eval ${var.prefix}
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+      parameters:
+        - name: mode  # `databricks bundle run guardrail_eval --params mode=full` sends every prompt
+          default: sample
+        - name: run_id  # an earlier run's id resumes it, sending only the prompts it hasn't
+          default: ""
+      tasks:
+        - task_key: load_prompts
+          notebook_task:
+            notebook_path: src/load_prompts.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              prefix: ${var.prefix}
+              config: ${workspace.file_path}/src/eval_config.json
+        - task_key: run_eval
+          depends_on:
+            - task_key: load_prompts
+          max_retries: 0
+          disable_auto_optimization: true  # serverless retries a failed task otherwise, and a retried new run starts a second run
+          notebook_task:
+            notebook_path: src/run_eval.py
+            base_parameters:  # mode and run_id: the job parameters reach the notebook as widgets on their own
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              prefix: ${var.prefix}
+              config: ${workspace.file_path}/src/eval_config.json
+
+targets:
+  # No `mode: development`: the job is run by hand, and development mode would rename it.
+  default:
+    default: true
+    workspace:
+      profile: <profile>

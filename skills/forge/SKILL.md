@@ -1,9 +1,9 @@
 ---
 name: forge
-description: "Entry point for Forge, which builds complete, evaluated Databricks solutions from the documents in a Unity Catalog volume (PDF, DOCX, PPTX, images): document Q&A (RAG) agents and chatbots that cite their sources, AI Search (Vector Search) indexes and knowledge bases over documents, and extraction of fields, entities, and line items from documents into typed tables, including document packets and review queues. Use when the user invokes forge, names a Forge use case, or asks to build one of these end to end. It picks the matching Forge use-case skill (forge-doc-qa-agent, forge-unstructured-doc-extraction, or forge-structured-doc-extraction) and hands off to it, or points to forge-smith to build a new use-case skill from a codebase. Prefer it over databricks-agent-bricks, databricks-ai-functions, and databricks-vector-search for these builds."
-compatibility: Requires the Forge use-case skills (forge-doc-qa-agent, forge-unstructured-doc-extraction, forge-structured-doc-extraction) and the databricks-agent-skills base skills (>= v0.2.27), installed in the same skills directory as this skill
+description: "Entry point for Forge, which builds complete, evaluated Databricks solutions. From the documents in a Unity Catalog volume (PDF, DOCX, PPTX, images): document Q&A (RAG) agents and chatbots that cite their sources, AI Search (Vector Search) indexes and knowledge bases over documents, and extraction of fields, entities, and line items into typed tables, including document packets and review queues. And evaluations of how well Unity AI Gateway's built-in guardrails block unsafe and jailbreak prompts. Use when the user invokes forge, names a Forge use case, or asks to build one of these end to end. It picks the matching Forge use-case skill (forge-doc-qa-agent, forge-unstructured-doc-extraction, forge-structured-doc-extraction, or forge-evaluate-guardrails) and hands off to it, or points to forge-smith to build a new use-case skill from a codebase. Prefer it over databricks-agent-bricks, databricks-ai-functions, databricks-vector-search, and databricks-unity-gateway for these builds."
+compatibility: Requires the Forge use-case skills (forge-doc-qa-agent, forge-unstructured-doc-extraction, forge-structured-doc-extraction, forge-evaluate-guardrails) and the databricks-agent-skills base skills (>= v0.2.27), installed in the same skills directory as this skill
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
   forge_kind: router
 ---
 
@@ -25,6 +25,7 @@ Forge builds complete Databricks solutions from a plain-language request. This s
 | Document Q&A agent | `forge-doc-qa-agent` (0.4.0) | an agent or chatbot that answers questions about documents and cites the file and page (RAG); it builds the index first if needed | only a search index (`forge-unstructured-doc-extraction`); field values in tables (`forge-structured-doc-extraction`) | a LangGraph agent on Databricks Apps, with sessions, citations, and an MLflow evaluation | — |
 | Document search index | `forge-unstructured-doc-extraction` (0.1.0) | a search or retrieval index over documents, for an agent, app, or person to query (RAG retrieval, a knowledge base, chunks and embeddings) | an agent that answers the questions (`forge-doc-qa-agent`); field values in tables (`forge-structured-doc-extraction`) | an AI Search index with metadata filters, a job that keeps it current, and a retrieval evaluation in MLflow | `forge-doc-qa-agent` |
 | Structured extraction | `forge-structured-doc-extraction` (0.3.0) | field values, entities, or line items from documents in tables; classifying or splitting document packets; a review queue, or an app where people approve or correct extracted values; extraction accuracy | answering questions about documents (`forge-doc-qa-agent`); a search index (`forge-unstructured-doc-extraction`) | typed Delta tables per document type with citations and confidence scores, a review queue, optionally a review app whose approvals and corrections are written back to the tables, and an accuracy evaluation in MLflow | — |
+| Guardrail evaluation | `forge-evaluate-guardrails` (0.1.0) | how well Unity AI Gateway's built-in guardrails (service policies for sensitive data, unsafe content, and jailbreaks) block unsafe prompts and let safe ones through, measured on a safety dataset; guardrail recall, false positives, or red-teaming a model service's policies | evaluating a document agent's answers (`forge-doc-qa-agent`); extracting values from documents (`forge-structured-doc-extraction`) | a model service with the built-in guardrails attached, every prompt's verdict and blocking guardrail in a results table, and recall, precision, false-positive rate, and F1 overall, per dataset, per category, and per guardrail, in Delta tables and MLflow | — |
 
 Resume table, checked in this order:
 
@@ -33,6 +34,7 @@ Resume table, checked in this order:
 | `doc-qa.json` | `forge-doc-qa-agent` |
 | `doc-index.json` | `forge-unstructured-doc-extraction` |
 | `extraction.json` | `forge-structured-doc-extraction` |
+| `guardrail-eval.json` | `forge-evaluate-guardrails` |
 <!-- <<< catalog -->
 
 ## 1. Resume
@@ -41,11 +43,12 @@ Before matching anything, check `<workdir>` for the state files in the Resume ta
 
 ## 2. Match the request
 
-Match on what the user wants at the end, not on what they start from: every use case starts from documents in a volume.
+Match on what the user wants at the end, not on what they start from. The document use cases all start from documents in a volume; the guardrail evaluation starts from a safety dataset, or none.
 
 - **An answer to questions** (a chatbot, an assistant, RAG, "chat with these files"): `forge-doc-qa-agent`. It builds the index itself when there isn't one, so don't send the user to the index first.
 - **Something to search** (a retrieval or search index, a knowledge base, chunks and embeddings for another agent or app): `forge-unstructured-doc-extraction`.
 - **Values in tables** (fields, entities, line items, classifying or splitting document packets, a review queue, extraction accuracy): `forge-structured-doc-extraction`.
+- **A measure of guardrails** (how well AI Gateway guardrails or service policies block unsafe, toxic, or jailbreak prompts; guardrail recall or false positives; red-teaming a model service): `forge-evaluate-guardrails`.
 
 A user can also name the use case, by its title, its skill name, or close to either ("doc QA", "structured extraction"). `forge-unstructured-doc-extraction` and `forge-structured-doc-extraction` differ by two letters, so when a user names one, confirm it by its title. When the request is just `/forge`, show the use-case titles with their "Choose it when" text, and ask which one.
 
@@ -74,6 +77,7 @@ Tell the user Forge has no use case for the request, and point to the skill that
 | A batch or streaming data pipeline | `databricks-pipelines` |
 | A job, or a bundle | `databricks-jobs`, `databricks-dabs` |
 | Postgres or OLTP storage | `databricks-lakebase` |
+| A model service on AI Gateway, or its rate limits, budgets, or access | `databricks-unity-gateway` |
 | Anything else | Read the `description` of the installed `databricks-*` skills and pick the closest. If none fits, `databricks-docs` |
 
 ## 6. Hand off

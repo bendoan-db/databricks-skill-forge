@@ -1,0 +1,129 @@
+# Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
+# and scripts/check_base_skills.py reads base_skills at runtime.
+name: forge-evaluate-guardrails
+version: 0.1.0
+owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
+dbs_release: dbs-2026.11                    # Forge base release; not published yet, so `upstream` is the working pin
+upstream: databricks/databricks-agent-skills@v0.2.34   # written against this tag; not yet certified in a workspace
+upstream_min: v0.2.27                       # oldest tag with every cited base skill and reference file
+source:
+  repo: https://github.com/bendoan-db/uaig-guardrail-evals
+  commit: 827c9e5
+  ported: built-in guardrails, the gateway calls and fail-closed rule, scoring, MLflow logging   # not the custom SQL or LLM-judge guardrails
+inputs:
+  required: [target_schema, dataset]        # dataset: module 00 asks; without one, the default datasets
+  optional: [profile, name, prefix, base_model_service, guardrails, evaluators, sample_size, concurrency, targets]
+shared:                                     # identical in every skill that carries them; tests/test_skills.py checks
+  - scripts/check_base_skills.py
+
+catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
+  title: Guardrail evaluation
+  choose_when: how well Unity AI Gateway's built-in guardrails (service policies for sensitive data, unsafe content, and jailbreaks) block unsafe prompts and let safe ones through, measured on a safety dataset; guardrail recall, false positives, or red-teaming a model service's policies
+  not_for: evaluating a document agent's answers (forge-doc-qa-agent); extracting values from documents (forge-structured-doc-extraction)
+  produces: a model service with the built-in guardrails attached, every prompt's verdict and blocking guardrail in a results table, and recall, precision, false-positive rate, and F1 overall, per dataset, per category, and per guardrail, in Delta tables and MLflow
+  state_file: guardrail-eval.json           # forge offers to resume this skill when the file is in <workdir>
+  next: []
+
+modules:
+  - id: 00-preflight
+    file: modules/00-preflight.md
+    scripts: [scripts/check_base_skills.py]
+    base_skills:
+      - name: databricks-core
+        version: 0.1.0
+        uses: [profile selection, auth, warehouse discovery]
+      - name: databricks-unity-catalog
+        version: 0.3.0
+        uses: [effective grants]
+
+  - id: 01-dataset
+    file: modules/01-dataset.md
+    scripts: [scripts/render.py, scripts/databricks.yml, scripts/load_prompts.py]
+    base_skills:
+      - name: databricks-unity-catalog
+        version: 0.3.0
+        uses: [volumes, staging files with databricks fs cp]
+      - name: databricks-dabs
+        version: unversioned                # upstream SKILL.md has no metadata.version
+        uses: [bundle validate, deploy, run --only]
+
+  - id: 02-guardrails
+    file: modules/02-guardrails.md
+    scripts: [scripts/guardrail_service.py]
+    base_skills:
+      - name: databricks-unity-gateway
+        version: 0.1.0
+        uses: [model service resource names and routing, privileges, querying the unified chat completions API]
+
+  - id: 03-evaluate
+    file: modules/03-evaluate.md
+    scripts: [scripts/run_eval.py, scripts/evaluate.py]
+    base_skills:
+      - name: databricks-dabs
+        version: unversioned
+        uses: [bundle run with job parameters]
+    external:
+      - name: mlflow-skinny
+        version: ">=3"
+        uses: [log_params, log_metrics, log_dict]
+
+# Capabilities this skill needs but the pinned base release doesn't cover, or covers with stale facts.
+# SKILL.md "Base-skill guidance to override" holds the runtime instructions for each entry.
+# Drafts of the upstream change proposals: docs/evaluate-guardrails-upstream-proposals.md.
+coverage_gaps:
+  - capability: Guardrails (service policies) on model services, including the built-in policies and attaching them by API
+    modules: [02-guardrails, 03-evaluate]
+    kind: missing
+    evidence:
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/
+        date_modified: 2026-10-29
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/create-service-policy
+        date_modified: 2026-10-29
+  - capability: Reading a model service's service policies, which the typed CLI leaves out
+    modules: [02-guardrails]
+    kind: missing
+    evidence: []                             # from the source (CLI 1.18.0, 2026-10-01): get-model-service omits config.service_policies. Recheck on newer CLIs
+
+# Platform facts this skill hard-codes. The refiner re-checks them like coverage_gaps; when one changes,
+# update every file in used_in.
+facts:
+  - fact: The built-in guardrails are system.ai.detect_sensitive_data, block_unsafe_content, block_jailbreak (input only on model services), and block_hallucination (output only)
+    used_in: [scripts/guardrail_service.py, SKILL.md, modules/02-guardrails.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/
+        checked: 2026-11-02
+  - fact: Sensitive Data Detection detects 15 classification tags, class.email_address through class.in_aadhaar, and blocks or redacts
+    used_in: [scripts/guardrail_service.py, modules/02-guardrails.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/detect-sensitive-data
+        checked: 2026-11-02
+  - fact: A blocked call returns HTTP 200 with a top-level databricks_service_policy object; a policy that fails to evaluate denies the request (fail closed)
+    used_in: [scripts/run_eval.py, scripts/guardrail_service.py, modules/03-evaluate.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/
+        checked: 2026-11-02
+  - fact: The Unity Gateway Service Policies preview is enabled by a workspace admin, and policy changes take a minute or two to propagate
+    used_in: [modules/00-preflight.md, modules/02-guardrails.md, scripts/run_eval.py]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/create-service-policy
+        checked: 2026-11-02
+  - fact: The default evaluators are system.ai.gemma-3-12b (Unsafe Content) and system.ai.gpt-oss-20b (Jailbreak)
+    kind: heuristic                          # the source's tested choices; the docs say the form preselects a default without naming it
+    used_in: [SKILL.md, modules/00-preflight.md]
+    evidence: []
+  - fact: The default datasets are Aegis 2.0's test split (revision d86bb8b, CC BY 4.0) and ToxicChat 0124's test split (revision 29df8e4, CC BY-NC 4.0), checked by sha256
+    used_in: [scripts/load_prompts.py, SKILL.md, modules/00-preflight.md, modules/01-dataset.md]
+    evidence:
+      - url: https://huggingface.co/datasets/nvidia/Aegis-AI-Content-Safety-Dataset-2.0
+        checked: 2026-11-02
+      - url: https://huggingface.co/datasets/lmsys/toxic-chat
+        checked: 2026-11-02
+  - fact: Serverless retries a failed task even with max_retries 0 unless disable_auto_optimization is set
+    used_in: [scripts/databricks.yml]
+    evidence: []                             # from the source (2026-10-01); confirm in a workspace
+  - fact: A run passes at a scored rate of 0.98
+    kind: heuristic                          # errors (calls that failed after retries) above 2% make the rates unreliable
+    used_in: [scripts/evaluate.py, modules/03-evaluate.md, SKILL.md, evals/scenarios.yaml]
+    evidence: []
+
+scenarios: evals/scenarios.yaml
