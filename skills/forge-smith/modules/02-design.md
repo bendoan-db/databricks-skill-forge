@@ -21,7 +21,7 @@ Read [anatomy.md](../references/anatomy.md) first, and use [blueprint.md](../ref
 - **Variants become choices, not modules:** alternative paths and optional features become decision points or optional inputs.
 - **The last module evaluates.** If the codebase scores its own result, port that. If it doesn't, propose a metric that shows the result works for its user, with a floor, and let the author decide. Examples: retrieval hit rate, extraction accuracy against labels, answer correctness, row counts that reconcile with the source, or latency.
 
-For each module, record its `id` (`NN-name`), `title`, `purpose`, `produces`, `sources` (the codebase files), and `scripts` (the `scripts/<file>` its sources are ported into). Job and training code in `scripts` becomes Databricks notebooks; list app code (a Databricks App, agent code) under `app_scripts` instead, since it stays Python modules (anatomy.md, Scripts).
+For each module, record its `id` (`NN-name`), `title`, `purpose`, `produces`, `sources` (the codebase files), and `scripts` (the `scripts/<file>` its sources are ported into). Job and training code in `scripts` becomes Databricks notebooks; list app code (a Databricks App, agent code) under `app_scripts` instead, since it stays Python modules (anatomy.md, Scripts). A skill with notebooks also lists `scripts/databricks.yml` and `scripts/render.py` in the module that deploys the job.
 
 ## 3. Base skills and Load lines
 

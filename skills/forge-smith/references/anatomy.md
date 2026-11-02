@@ -56,6 +56,14 @@ Each module (checked): `# NN · Title`, a one-line purpose, `## Inputs → outpu
   - every setting is a flag in `build_parser()`; `notebook_argv()` reads the same settings from widgets;
   - the last cell is the guarded run cell, so tests can import it, and it still runs locally through Databricks Connect.
   The bundle template runs it as a `notebook_task` (`notebook_path: src/<file>.py`), with its flags as `base_parameters` named like each flag's dest. Never a `spark_python_task`.
+- **Users' workspace edits survive** (checked). `scripts/render.py` (from `templates/render.py`) copies the job's notebooks into the bundle with a checksum line, keeps a copy the user changed and lists it under `kept_edited`, and replaces it only with `--force`. The module that deploys the job has an `## Editing the job's notebooks` section: where the notebooks are in the workspace, and how to export an edit back into the bundle before the next deploy.
+- **Porting a source notebook** into the skeleton:
+  - `.ipynb` cells, or a source notebook's cells, go into the stub's cells, grouped by stage;
+  - `dbutils.widgets` become flags in `build_parser()`, which the stub's `notebook_argv()` reads back from widgets;
+  - `%pip install` lines go in the `%pip` cell, pinned; `%run` helpers are copied into the notebook, since skills can't import each other;
+  - `%sql` cells become `spark.sql(...)`, or sections of a `.sql` file the notebook reads from `script_dir()`;
+  - `display()` calls and exploration cells are dropped, and the run ends by printing a JSON summary;
+  - the Spark session comes from `get_spark()`, so the notebook also runs locally through Databricks Connect, and Python UDFs stay defined in the notebook.
 - **App code stays a Python module:** a Databricks App's or an agent's code is imported and packaged by the app, which is the platform's practice. List it under a module's `app_scripts`.
 - **The agent's local tools** (`render.py`, `evaluate.py`, `check_base_skills.py`) stay scripts, with PEP 723 headers declaring their dependencies, for Python 3.11 or later.
 - **Jobs run on serverless** unless something needs classic compute. Then say what needs it, as a decision point.

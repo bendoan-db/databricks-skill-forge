@@ -198,7 +198,7 @@ The agent asks before parsing, extracting, re-extracting, starting the OCR clust
 
 ### Build your own use case
 
-Invoke `forge-smith` with the code that already implements the solution, for example `/forge-smith turn github.com/acme/claims-accelerator into a use-case skill`. It works through six modules, and you approve the design and the questions before it writes anything:
+Invoke `forge-smith` with the code that already implements the solution, for example `/forge-smith turn github.com/acme/claims-accelerator into a use-case skill`. The skill it builds deploys its job and training code as Databricks notebooks, which its users can edit in their workspace, and keeps app code as Python modules. It works through six modules, and you approve the design and the questions before it writes anything:
 
 | # | Module | What happens |
 |---|---|---|

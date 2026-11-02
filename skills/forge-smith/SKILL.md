@@ -22,6 +22,7 @@ It doesn't run the codebase or touch a workspace. The skill it writes still has 
 - A **Forge checkout** is a clone of databricks-skill-forge, where `<out>` is its `skills/` folder. There, module 05 also adds the skill to the `forge` router's catalog and runs the repo's tests.
 - [references/anatomy.md](references/anatomy.md) is how a Forge use-case skill is built. Read it in module 02, before designing anything.
 - Run the scripts with `uv run <smith>/scripts/<file>.py`. They declare their own dependencies.
+- **Job and training code becomes Databricks notebooks** that the new skill deploys as notebook tasks, so its users can edit them in their workspace, and its `render.py` keeps those edits. App code stays Python modules ([references/anatomy.md](references/anatomy.md), Scripts).
 
 ## Guardrails
 

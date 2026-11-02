@@ -39,6 +39,7 @@ Tell the author:
 - where the skill is, and its modules, each with the source files it came from;
 - the questions its module 00 asks;
 - what wasn't ported and why, and any hard-coded secrets found in the source;
+- the job's notebooks, and that users can edit them in their workspace (the "Editing the job's notebooks" section);
 - that it hasn't run in a workspace, so it needs an end-to-end run, such as its `evals/scenarios.yaml`, before anyone relies on it;
 - how to start it: through `forge` in a Forge checkout, or otherwise by its name.
 

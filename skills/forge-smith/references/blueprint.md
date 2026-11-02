@@ -66,7 +66,8 @@ The design of the new skill, kept under `skill` in `<workdir>/smith.json`. Modul
        "base_skills": [{"name": "databricks-core", "uses": ["profile selection", "auth"]},
                        {"name": "databricks-unity-catalog", "reference": "references/1-access-control.md", "uses": ["effective grants"]}]},
       {"id": "01-ingest", "title": "Ingest", "purpose": "Read new claims incrementally into a staging table.",
-       "produces": "`<prefix>_staged`", "sources": ["notebooks/01_ingest.py"], "scripts": ["scripts/ingest.py"],
+       "produces": "`<prefix>_staged`", "sources": ["notebooks/01_ingest.py"],
+       "scripts": ["scripts/render.py", "scripts/databricks.yml", "scripts/ingest.py"],
        "base_skills": [{"name": "databricks-spark-structured-streaming", "reference": "references/trigger-and-cost-optimization.md", "uses": ["availableNow trigger"]}]},
       {"id": "02-evaluate", "title": "Evaluate", "purpose": "Score a labeled sample and compare with the thresholds.",
        "produces": "an MLflow run, pass/fail against the thresholds", "sources": ["notebooks/05_eval.py"],
@@ -97,7 +98,7 @@ The design of the new skill, kept under `skill` in `<workdir>/smith.json`. Modul
 | `inputs.optional` | `default` and `notes`. `profile` is added when missing |
 | `inputs.derived` | Values module 00 computes and shows back to the user |
 | `permissions`, `billable` | Module 00's permissions table and cost list. `billable` also fills the confirmation guardrail |
-| `modules` | `00-preflight` first (it must load `databricks-core`), and one module whose id ends in `-evaluate`. Each other module needs `title` and `produces`. `sources` are codebase files, and `scripts` are the files the module ports them into (`scripts/<file>`; stubs are written). A Python script there, other than `render.py`, `evaluate.py`, and `check_base_skills.py`, is job or training code, and its stub is a Databricks notebook; `scripts/databricks.yml` gets a stub that runs each one as a notebook task. `app_scripts` (`scripts/[<folder>/]<file>`) are app code, whose stubs stay plain modules. `base_skills` names installed skills; `reference` is one file in the skill, or omitted to mean its SKILL.md |
+| `modules` | `00-preflight` first (it must load `databricks-core`), and one module whose id ends in `-evaluate`. Each other module needs `title` and `produces`. `sources` are codebase files, and `scripts` are the files the module ports them into (`scripts/<file>`; stubs are written). A Python script there, other than `render.py`, `evaluate.py`, and `check_base_skills.py`, is job or training code, and its stub is a Databricks notebook. A skill with notebooks lists `scripts/databricks.yml` and `scripts/render.py` in the module that deploys the job: the first gets a stub that runs each notebook as a notebook task, the second copies them into the bundle and keeps the user's workspace edits, and that module gets an "Editing the job's notebooks" section. `app_scripts` (`scripts/[<folder>/]<file>`) are app code, whose stubs stay plain modules. `base_skills` names installed skills; `reference` is one file in the skill, or omitted to mean its SKILL.md |
 | `thresholds` | `{metric: floor}`. Written into `scripts/evaluate.py` and `evals/scenarios.yaml` |
 | `decision_points`, `done_when`, `overrides`, `guardrails` | Rows and lines for those SKILL.md sections. An override has `topic` and `guidance`, plus a `coverage_gaps` entry with its evidence |
 | `coverage_gaps`, `facts`, `requires` | Copied into `ucs.yaml` as they are (see anatomy.md) |

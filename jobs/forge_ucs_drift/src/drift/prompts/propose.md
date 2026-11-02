@@ -22,6 +22,7 @@ How edits work:
 - Paths are relative to the repository root. Edit only files under skills/{{forge_skill}}/, plus README.md if its "Available skills" row or "Use" section repeats something you change.
 - Don't edit the skill's version (SKILL.md metadata.version, ucs.yaml version, the README version) or the ucs.yaml `upstream:` pin. The pipeline sets them from "bump" and the new tag.
 - Scripts may change when the upstream change requires it. A shared file (listed under `shared` in ucs.yaml, such as scripts/parse.py) must stay identical in every skill: edit this skill's copy, and the pipeline copies it to the others.
+- Job and training scripts are Databricks notebooks (tested): line 1 `# Databricks notebook source`, `# COMMAND ----------` between cells, settings as flags in `build_parser()`, and the guarded run cell last. Keep that format in an edit or a new job script, and keep `notebook_argv` and `script_dir` identical to scripts/parse.py's. Job tasks in scripts/databricks.yml are `notebook_task`s, never `spark_python_task`s. App code and the local tools (render.py, evaluate.py, check_base_skills.py) stay plain Python.
 - If no edit is needed after all, return an empty edits list and explain in reviewer_notes; the pipeline then only moves the pin. Don't invent work.
 
 Forge's rules (the repository's tests enforce the ones marked tested):

@@ -8,8 +8,10 @@
 
 Writes <out>/<name>/ (default <out>: the skills folder holding forge-smith): SKILL.md, modules/, ucs.yaml,
 evals/scenarios.yaml, scripts/check_base_skills.py, scripts/evaluate.py, and a stub for every other script a
-module lists. Job and training code stubs are Databricks notebooks (templates/notebook.py), and a scripts/databricks.yml
-stub runs them as notebook tasks; app code stubs (a module's `app_scripts`) stay Python modules. Everything the
+module lists. Job and training code stubs are Databricks notebooks (templates/notebook.py), a scripts/databricks.yml
+stub runs them as notebook tasks, and scripts/render.py (templates/render.py) copies them into the bundle, keeping
+copies the user edited in the workspace; the module that deploys the job says how to keep such an edit. App code
+stubs (a module's `app_scripts`) stay Python modules. Everything the
 blueprint settles is filled in: frontmatter, the Inputs table, module 00's
 discovery questions, checks, permissions, and cost list, each module's Load lines (one per base skill), the
 Workflow table, ucs.yaml with the installed base-skill versions, and the thresholds. What only the agent can
@@ -38,6 +40,24 @@ SCRIPT_RE = re.compile(r"^scripts/[\w.-]+$")
 APP_SCRIPT_RE = re.compile(r"^scripts/([\w.-]+/)?[\w.-]+$")  # app code may sit in its own folder, such as scripts/app/
 LOCAL_TOOLS = {"render.py", "evaluate.py", "check_base_skills.py"}  # run by the agent with uv, not deployed
 MARK = "<!-- smith: {} -->"
+EDITING_NOTEBOOKS = """## Editing the job's notebooks
+
+The job's tasks are Databricks notebooks, deployed from `<workdir>/<bundle_name>/src/` to the bundle's folder in the \
+workspace. `databricks bundle summary --profile <profile>` shows that folder as `file_path`; the notebooks are in its \
+`src/`, without the `.py` extension. The user can open one there, change it, and run it by hand with the widgets at \
+its top, which the job fills in on its runs.
+
+A deploy replaces the workspace copies with the local ones. To keep a change made in the workspace, export it into \
+the bundle first:
+
+```bash
+databricks workspace export <file_path>/src/<notebook> --format SOURCE --file <workdir>/<bundle_name>/src/<notebook>.py \
+--profile <profile>
+```
+
+`render.py` keeps an edited copy when it renders again, and lists it under `kept_edited`. `--force` replaces it with \
+the skill's version. A kept copy doesn't pick up later changes to the skill, so tell the user which files are kept.
+"""
 
 
 class BlueprintError(Exception):
@@ -114,6 +134,12 @@ def check_blueprint(bp: dict, skills_dir: Path) -> list[str]:
                 problems.append(f"module {module.get('id')}: base skill {dep.get('name')} isn't installed in {skills_dir}")
             elif dep.get("reference") and not (folder / dep["reference"]).is_file():
                 problems.append(f"module {module.get('id')}: {dep['name']} has no {dep['reference']}")
+    scripts = {s for m in modules for s in m.get("scripts", [])}
+    if any(is_notebook(s) for s in scripts):
+        for needed in ("scripts/databricks.yml", "scripts/render.py"):
+            if needed not in scripts:
+                problems.append(f"job notebooks need {needed} in the module that deploys the job: the bundle runs them "
+                                "as notebook tasks, and render.py copies them, keeping the user's workspace edits")
     first = modules[0] if modules else {}
     if "databricks-core" not in {d.get("name") for d in first.get("base_skills", [])}:
         problems.append("00-preflight must load databricks-core (profile selection and auth)")
@@ -378,6 +404,7 @@ def module_md(bp: dict, module: dict) -> str:
         *run,
         MARK.format("the steps" + (f", ported from {sources}" if sources else "")),
         "",
+        *([EDITING_NOTEBOOKS] if "scripts/databricks.yml" in (module.get("scripts") or []) else []),
         "## Verify",
         "",
         "- " + MARK.format("what must be true before the next module runs"),
@@ -488,6 +515,24 @@ def notebook_stub(bp: dict, script: str, module: dict) -> str:
     return text
 
 
+def job_files(bp: dict) -> list[str]:
+    """What render.py copies into the bundle: the job's notebooks and the other files modules port for it (.sql)."""
+    names = [Path(s).name for m in bp["modules"] for s in m.get("scripts") or []
+             if s != "scripts/databricks.yml" and Path(s).name not in LOCAL_TOOLS]
+    return list(dict.fromkeys(names))
+
+
+def render_stub(bp: dict, module: dict) -> str:
+    text = (TEMPLATES / "render.py").read_text()
+    for placeholder, value in {"<skill-name>": bp["name"], "<state-file>": bp["state_file"],
+                               "<module-id>": module["id"][:2]}.items():
+        text = text.replace(placeholder, value)
+    text, count = re.subn(r"(?m)^JOB_FILES = \[\]  # smith: ", f"JOB_FILES = {job_files(bp)!r}  # smith: confirm ", text)
+    if count != 1:
+        raise BlueprintError("templates/render.py must have one `JOB_FILES = []  # smith: ...` line")
+    return text
+
+
 def bundle_stub(bp: dict) -> str:
     """scripts/databricks.yml with one notebook task per notebook stub, in module order."""
     notebooks = [s for m in bp["modules"] for s in m.get("scripts") or [] if is_notebook(s)]
@@ -527,6 +572,8 @@ def bundle_stub(bp: dict) -> str:
 def stub(bp: dict, script: str, module: dict, app: bool = False) -> str:
     if script == "scripts/databricks.yml":
         return bundle_stub(bp)
+    if script == "scripts/render.py":
+        return render_stub(bp, module)
     if is_notebook(script) and not app:
         return notebook_stub(bp, script, module)
     sources = ", ".join(module.get("sources") or []) or "the source"

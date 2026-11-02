@@ -262,7 +262,7 @@ def test_scaffold_writes_a_skill_that_passes_once_filled(skills: Path, tmp_path:
 def job_blueprint() -> dict:
     """The example with a job template and an app module: job code is a notebook, app code a module."""
     bp = example_blueprint()
-    bp["modules"][1]["scripts"] = ["scripts/ingest.py", "scripts/score.py", "scripts/databricks.yml"]
+    bp["modules"][1]["scripts"] = ["scripts/render.py", "scripts/ingest.py", "scripts/score.py", "scripts/databricks.yml"]
     bp["modules"][1]["app_scripts"] = ["scripts/app/app.py"]
     return bp
 
@@ -295,6 +295,55 @@ def test_check_skill_requires_notebook_job_tasks(skills: Path, tmp_path: Path):
     problems = "\n".join(check_skill.check(folder))
     assert "task score is a spark_python_task" in problems
     assert "scripts/ingest.py: a job task, so it must start with `# Databricks notebook source`" in problems
+
+
+def test_check_skill_requires_a_way_to_keep_workspace_edits(skills: Path, tmp_path: Path):
+    folder = scaffold.scaffold(job_blueprint(), skills, tmp_path / "out")
+    fill(folder)
+    module = folder / "modules" / "01-ingest.md"
+    module.write_text(module.read_text().replace("## Editing the job's notebooks", "## Notebooks"))
+    (folder / "scripts" / "render.py").write_text("# renders the bundle\n")
+    problems = "\n".join(check_skill.check(folder))
+    assert "needs an `## Editing the job's notebooks` section" in problems
+    assert "scripts/render.py must keep copies the user edited" in problems
+
+
+def test_generated_render_keeps_workspace_edits(skills: Path, tmp_path: Path):
+    """A generated skill's render.py copies its notebooks with a checksum line, and keeps a copy the user changed."""
+    folder = scaffold.scaffold(example_blueprint(), skills, tmp_path / "out")
+    fill(folder)
+    assert "## Editing the job's notebooks" in (folder / "modules" / "01-ingest.md").read_text()
+    state = tmp_path / "work" / "claims.json"
+    state.parent.mkdir()
+    state.write_text(json.dumps({"bundle_name": "claims-job", "profile": "DEFAULT"}))
+    render = [sys.executable, "-B", str(folder / "scripts" / "render.py"), "--state", str(state)]
+    first = subprocess.run(render, capture_output=True, text=True, check=False)
+    assert first.returncode == 0, first.stderr
+    bundle = state.parent / "claims-job"
+    assert yaml.safe_load((bundle / "databricks.yml").read_text())["bundle"]["name"] == "claims-job"
+    copy = bundle / "src" / "ingest.py"
+    lines = copy.read_text().splitlines()
+    assert lines[0] == check_skill.NOTEBOOK_HEADER and lines[1].startswith("# Copied from forge-claims-triage")
+
+    copy.write_text(copy.read_text().replace("# filled in", "# changed in the workspace", 1))
+    again = subprocess.run(render, capture_output=True, text=True, check=False)
+    assert json.loads(again.stdout)["kept_edited"] == [str(copy)] and "changed in the workspace" in copy.read_text()
+    forced = subprocess.run(render + ["--force"], capture_output=True, text=True, check=False)
+    assert str(copy) in json.loads(forced.stdout)["written"] and "changed in the workspace" not in copy.read_text()
+
+
+def test_render_template_copies_like_the_pipeline_skills():
+    """templates/render.py's copy helpers are the hand-built pipeline skills', so every Forge skill keeps edits the same way."""
+    def parts(path: Path) -> dict[str, str]:
+        text = path.read_text()
+        return {getattr(n, "name", None) or n.targets[0].id: ast.get_source_segment(text, n) for n in ast.parse(text).body
+                if (isinstance(n, ast.FunctionDef) and n.name in ("digest", "mark_copy", "copy_edited"))
+                or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("COPY_MARK", "COPY_MARK_RE"))}
+
+    template = parts(SMITH / "templates" / "render.py")
+    assert len(template) == 5
+    for skill in ("forge-structured-doc-extraction", "forge-unstructured-doc-extraction"):
+        assert parts(SKILLS_DIR / skill / "scripts" / "render.py") == template, f"{skill}/scripts/render.py"
 
 
 def test_notebook_template_helpers_match_the_shared_parse_stage():
@@ -333,6 +382,7 @@ def test_blueprint_example_is_valid(skills: Path):
     (lambda bp: bp["inputs"]["required"][0].pop("ask"), "required inputs need `ask`"),
     (lambda bp: bp.update(state_file="Claims.JSON"), "state_file"),
     (lambda bp: bp.update(upstream="latest"), "upstream"),
+    (lambda bp: bp["modules"][1].update(scripts=["scripts/ingest.py"]), "job notebooks need scripts/databricks.yml"),
     (lambda bp: bp["modules"][1].update(app_scripts=["app/app.py"]), "app script"),
 ])
 def test_scaffold_refuses_unready_blueprints(skills: Path, change, expected: str):

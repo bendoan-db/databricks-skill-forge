@@ -31,6 +31,9 @@ Since 2026-11-01, pipeline and training code in every Forge skill is a Databrick
 - **Stubs:** `scaffold.py` writes job and training stubs from `templates/notebook.py`, and a `scripts/databricks.yml` stub with a notebook task for each one. A module's `app_scripts` get plain-module stubs.
 - **Checks:** `check_skill.py` checks that every job task in `scripts/databricks.yml` is a `notebook_task`, and that the notebook it runs starts with the notebook header and ends with the guarded run cell. `tests/test_skills.py` checks the same on the hand-built skills, and also that each task's `base_parameters` are flags of its notebook's `build_parser()`.
 - **The skeleton's helpers** (`notebook_argv`, `script_dir`, `get_spark`) are copies of the shared `parse.py`'s; `tests/test_forge_smith.py` fails when they drift.
+- **Workspace edits survive in generated skills too.** A blueprint with notebooks must list `scripts/databricks.yml` and `scripts/render.py` (`check_blueprint`). `render.py` comes from `templates/render.py`, whose copy functions (the checksum line, `kept_edited`, `--force`) are the hand-built pipeline skills' (tested). The module that lists `scripts/databricks.yml` gets the "Editing the job's notebooks" section. `check_skill.py` fails a skill with job notebooks but without that section, or whose `render.py` doesn't keep edited copies.
+- **Porting guidance** for source notebooks (`.ipynb`, widgets, `%pip`, `%run`, `%sql`, `display()`) is in `references/anatomy.md`, Scripts.
+- **The drift job keeps the format:** its propose prompt carries the rule (prompt version 2026-11-02.1), and the repo tests it applies would fail an edit that breaks it.
 
 ## Discovery questions
 

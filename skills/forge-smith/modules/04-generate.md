@@ -16,7 +16,8 @@ uv run <smith>/scripts/scaffold.py --state <workdir>/smith.json --skills-dir <ou
 It writes `<out>/<name>/` and reports how many `smith:` markers are left to fill. It fills in everything the blueprint settles:
 - the frontmatter, and the Inputs, Guardrails, Workflow, and Decision points sections;
 - module 00, whole: its questions, checks, permissions, cost list, and state file;
-- each module's heading and Load lines;
+- each module's heading and Load lines, and, in the module that deploys the job, its "Editing the job's notebooks" section;
+- `render.py`, from `templates/render.py`: it renders the bundle and copies the job's notebooks, keeping the ones a user edited;
 - `ucs.yaml`, with the installed base-skill versions;
 - the thresholds, in `evaluate.py` and `scenarios.yaml`;
 - a copy of `check_base_skills.py`.
@@ -29,11 +30,11 @@ For each stub in `scripts/`, port the source files its module came from (the stu
 
 - **Read every setting from the state file,** `--state <workdir>/<state_file>`, by the input names from module 03. Hard-code nothing.
 - **Keep the source's logic,** and fix what anatomy.md lists under "Improve on the source". Note each change for the design note (module 05).
-- **Job and training code is a Databricks notebook.** Keep the stub's cells, its `build_parser()` flags, and its last cell (anatomy.md, Scripts). Put packages in its `%pip` cell. A job becomes a bundle template the skill renders from the state file, with a `notebook_task` per notebook, on serverless compute.
+- **Job and training code is a Databricks notebook.** Keep the stub's cells, its `build_parser()` flags, and its last cell, and port the source's notebooks as anatomy.md says (Scripts, "Porting a source notebook"). Put packages in its `%pip` cell. A job becomes a bundle template the skill renders from the state file, with a `notebook_task` per notebook, on serverless compute.
 - **App code stays a Python module** (`app_scripts`), and local tools declare their dependencies in the PEP 723 header.
 - **Don't run any of it.** It runs when the skill is certified.
 
-Write `measure()` in `scripts/evaluate.py` the same way.
+Write `measure()` in `scripts/evaluate.py` the same way. In `scripts/render.py`, fill in its state checks and its `<key>` values; keep its copy functions as they are, since they keep the user's edits.
 
 ## 3. Write the modules
 

@@ -186,7 +186,7 @@ def job_task_problems(folder: Path) -> list[str]:
         bundle = yaml.safe_load(template.read_text()) or {}
     except yaml.YAMLError as e:
         return [f"scripts/databricks.yml doesn't parse: {e}"]
-    problems = []
+    problems, notebooks = [], False
     for job_key, job in ((bundle.get("resources") or {}).get("jobs") or {}).items():
         for task in (job or {}).get("tasks") or []:
             where = f"scripts/databricks.yml: job {job_key}, task {task.get('task_key')}"
@@ -209,6 +209,16 @@ def job_task_problems(folder: Path) -> list[str]:
                 problems.append(f"scripts/{match.group(1)}: a job task, so it must start with `{NOTEBOOK_HEADER}`")
             if not text.rstrip().endswith(RUN_CELL):
                 problems.append(f"scripts/{match.group(1)}: must end with the guarded run cell (anatomy.md, Scripts)")
+            notebooks = True
+    if notebooks:  # users edit the notebooks in their workspace; the skill must say how to keep an edit, and keep it
+        modules = [path.read_text() for path in sorted((folder / "modules").glob("*.md"))]
+        if not any("\n## Editing the job's notebooks\n" in body for body in modules):
+            problems.append("job notebooks: the module that deploys the job needs an `## Editing the job's notebooks` "
+                            "section (anatomy.md, Scripts)")
+        render = folder / "scripts" / "render.py"
+        if not render.is_file() or "def copy_edited" not in render.read_text() or "kept_edited" not in render.read_text():
+            problems.append("job notebooks: scripts/render.py must keep copies the user edited (copy_edited, "
+                            "kept_edited; templates/render.py)")
     return problems
 
 
