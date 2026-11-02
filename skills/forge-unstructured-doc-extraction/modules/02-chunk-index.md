@@ -108,7 +108,7 @@ For errors not listed here, **load** `databricks-vector-search` `references/trou
 
 | Symptom | Fix |
 |---|---|
-| `ai_prep_search` not found | Requires DBR 18.2+ or serverless env ≥ 3; it is Beta — confirm availability in the workspace |
+| `ai_prep_search` not found | Requires DBR 18.2+ or serverless environment version 3+. Notebook tasks run on the workspace's default serverless environment: ask an admin to raise it if it's older. It is Beta: confirm availability in the workspace |
 | Index stuck provisioning | Endpoint not ONLINE, or the embedding endpoint is scaled to zero (first sync can time out) |
 | `Column not found in index` at query time | Column missing from `columns_to_sync`; recreate the index (confirm first) |
 | Sync never reaches the row count | Duplicate `chunk_id`s or NULL primary keys; check `SELECT chunk_id, count(*) ... HAVING count(*) > 1` |

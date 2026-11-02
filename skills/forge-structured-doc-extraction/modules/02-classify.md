@@ -4,7 +4,7 @@ Decide the document types and how documents are split into them. For `one_per_fi
 
 ## Inputs → outputs
 
-- **Inputs:** `<prefix>_parsed` (module 01), and `layout` and the user's field requests from `extraction.json`.
+- **Inputs:** `<prefix>_parsed` (module 01), and `layout`, the user's field requests, and `provided_schema` (if any) from `extraction.json`.
 - **Outputs:** `document_types` (names, descriptions, `pages`) and `classify_instructions` in `extraction.json`. After the module 03 run: `<prefix>_segments`, plus `<prefix>_pages` for packets.
 
 ## 1. Look at the documents
@@ -27,7 +27,7 @@ FROM pages ORDER BY rand() LIMIT 20;
 
 **Load:** `databricks-ai-functions` `references/1-task-functions.md`, the `ai_classify` section (labels with descriptions, `instructions`). Use version 2.1, not the version the base skill recommends (see SKILL.md, Base-skill guidance to override).
 
-Propose one document type for each kind the user needs fields from, and show the list to the user:
+Propose one document type for each kind the user needs fields from, and show the list to the user. If `provided_schema` defines several kinds of documents, start from those, renamed to fit these rules if needed:
 - **Names** are snake_case, at most 40 characters, without `__`. Each becomes a table, `<prefix>_<type>`.
 - **Descriptions** (at most 1,000 characters) say what sets the type apart: the form name or number, the fields printed on it, and how it differs from its nearest neighbor. Example: "A pay stub for one pay period: employer, employee, pay period dates, gross and net pay, year-to-date totals. Not a W-2, which covers a whole tax year."
 - **`other` is added for you.** Pages or documents that match no type (fax covers, separators, boilerplate, unlisted kinds) are labeled `other`, skipped for extraction, and listed in the review queue. Don't define it yourself.

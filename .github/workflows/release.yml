@@ -35,7 +35,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: uv run --no-project $TEST_DEPS pytest -q -p no:cacheprovider tests/test_installer_ps1.py
-      - name: Forge catalog is current
+      - name: Forge catalog and MANIFEST.md are current
         if: runner.os == 'Linux'
         run: uv run tools/build_forge_catalog.py --check
       - name: shellcheck install.sh

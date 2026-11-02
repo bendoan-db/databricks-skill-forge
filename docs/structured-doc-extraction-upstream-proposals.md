@@ -2,7 +2,7 @@
 
 Drafts for the base-skill gaps that `skills/forge-structured-doc-extraction` works around (and, for proposals 1 and 3, `forge-unstructured-doc-extraction` too), in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Checked against upstream `main` on 2026-10-23 (v0.2.34). Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in each `ucs.yaml`.
 
-The Agent Bricks Information Extraction deprecation is left out: no base skill covers it, and there's no public notice to cite yet.
+The Agent Bricks Information Extraction deprecation is left out: no base skill covers it, and there's no public notice to cite yet. Proposals 4 and 5 were added on 2026-11-01 for the review app (module 07), against v0.2.39.
 
 ---
 
@@ -39,3 +39,27 @@ The Agent Bricks Information Extraction deprecation is left out: no base skill c
 **Affected skill or area.** `databricks-ai-functions` (`references/1-task-functions.md`, `ai_parse_document` limits).
 
 **Additional context.** [ai_parse_document docs](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document) (updated 2026-10-22). Before filing, confirm in a workspace that a slice past page 500 parses, and how its page ids are numbered.
+
+---
+
+## 4. Say how a TRIGGERED synced table syncs
+
+**Problem or opportunity.** `databricks-lakebase/references/synced-tables.md` lists `TRIGGERED` as "Scheduled updates", but never says what starts one. The docs: Snapshot and Triggered modes "sync only when triggered", from "Sync now" in Catalog Explorer, or by adding the synced table's pipeline to a Lakeflow job as a "Database Table Sync pipeline" task (scheduled, or on a table update trigger). Agents choose `CONTINUOUS` to be safe, and pay for an always-on pipeline.
+
+**Proposed change.** Add how to sync a `TRIGGERED` table: where its pipeline id is in `get-synced-table`, and a job task that runs it (a DAB `pipeline_task` example). Add a cost note: a sync on each upstream job run, rather than continuous.
+
+**Affected skill or area.** `databricks-lakebase` (`references/synced-tables.md`, Sync Modes).
+
+**Additional context.** [Synced tables docs](https://docs.databricks.com/aws/en/oltp/projects/sync-tables) (updated 2026-10-30). Before filing, confirm the pipeline id's field in `get-synced-table` output, and that a `pipeline_task` runs it.
+
+---
+
+## 5. Update the Lakehouse Sync prerequisites
+
+**Problem or opportunity.** `databricks-lakebase/references/lakehouse-sync.md` and `synced-tables.md` say the tables "must reside in the `databricks_postgres` database", and that the project must run Postgres 17. The docs, now titled Lakebase Change Data Feed, say each feed captures from one database, of any name, on Postgres 16, 17, or 18. The docs also say tables with no rows aren't synced, so a history table appears only after the first row. Agents wait on a history table that won't exist yet.
+
+**Proposed change.** Update the prerequisites. Add "empty tables aren't synced" to the limitations, and to the step that waits for the history tables. Mention the feature's current name.
+
+**Affected skill or area.** `databricks-lakebase` (`references/lakehouse-sync.md`, the Lakehouse Sync section of `references/synced-tables.md`).
+
+**Additional context.** [Lakebase Change Data Feed docs](https://docs.databricks.com/aws/en/oltp/projects/lakehouse-sync) (updated 2026-06-11).

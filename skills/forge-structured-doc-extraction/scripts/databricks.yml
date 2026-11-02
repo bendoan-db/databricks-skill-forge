@@ -1,8 +1,13 @@
-# Template for the extraction job of the forge-structured-doc-extraction use-case skill (modules 01-04, 06).
+# Template for the extraction job of the forge-structured-doc-extraction use-case skill (modules 01-04, 06, 07).
 # Don't fill it by hand: `render.py` writes <name>-extract/databricks.yml from extraction.json, replacing
-# each whole-value <key> with a quoted value, and copies the job's scripts to src/. Lines between
+# each whole-value <key> with a quoted value, and copies the job's notebooks and SQL to src/. Every task is a
+# notebook task: the notebooks deploy as Databricks notebooks that users can open and change in the workspace,
+# and each base parameter arrives as the widget of the same name. Notebook tasks take no job environment, so
+# a notebook installs what it needs beyond the default serverless environment in its %pip cell. Lines between
 # "# >>> <block>" and "# <<< <block>" are optional: render.py drops the localize blocks unless localize is
-# on, and swaps the trigger block for a schedule when schedule_cron is set.
+# on, swaps the trigger block for a schedule when schedule_cron is set, keeps review_queue once the review
+# queue's synced table exists (review.sync_pipeline_id), and keeps review_sync once Lakehouse Sync writes the
+# decisions' history table (review.history_ready).
 bundle:
   name: <bundle_name>
 
@@ -28,6 +33,11 @@ variables:
   split_pages:
     description: "'folder' when each folder holds the single-page files of one document, else 'none'"
     default: <split_pages>
+  # >>> review_sync
+  history_table:
+    description: Lakehouse Sync history of the review app's decisions table (module 07)
+    default: <history_table>
+  # <<< review_sync
 
 resources:
   jobs:
@@ -47,12 +57,6 @@ resources:
           min_time_between_triggers_seconds: 300
           wait_after_last_change_seconds: 120
       # <<< trigger
-      environments:
-        - environment_key: default
-          spec:
-            environment_version: "4"  # ai_parse_document needs VARIANT (env >= 3); use the latest
-            dependencies:
-              - pypdf>=4  # page counts, to route PDFs over 500 pages to sliced parsing
       # >>> localize
       job_clusters:
         # Tesseract is a system binary that serverless doesn't have: a single-node classic cluster installs it.
@@ -74,45 +78,28 @@ resources:
       # <<< localize
       tasks:
         - task_key: parse
-          environment_key: default
-          spark_python_task:
-            python_file: src/parse.py
-            parameters:
-              - --catalog
-              - ${var.catalog}
-              - --schema
-              - ${var.schema}
-              - --prefix
-              - ${var.prefix}
-              - --volume-path
-              - ${var.volume_path}
-              - --description-element-types
-              - ${var.description_element_types}
-              - --page-images-path
-              - ${var.page_images_path}
-              - --split-pages
-              - ${var.split_pages}
-              - --sql-dir
-              - ${workspace.file_path}/src
+          notebook_task:
+            notebook_path: src/parse.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              prefix: ${var.prefix}
+              volume_path: ${var.volume_path}
+              description_element_types: ${var.description_element_types}
+              page_images_path: ${var.page_images_path}
+              split_pages: ${var.split_pages}
+              sql_dir: ${workspace.file_path}/src
         - task_key: extract
           depends_on:
             - task_key: parse
-          environment_key: default
-          spark_python_task:
-            python_file: src/extract.py
-            parameters:
-              - --catalog
-              - ${var.catalog}
-              - --schema
-              - ${var.schema}
-              - --prefix
-              - ${var.prefix}
-              - --config
-              - ${workspace.file_path}/src/extraction_config.json
-              - --full-refresh
-              - "{{job.parameters.full_refresh}}"
-              - --sql-dir
-              - ${workspace.file_path}/src
+          notebook_task:
+            notebook_path: src/extract.py
+            base_parameters:  # the job parameter full_refresh reaches the notebook as a widget on its own
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              prefix: ${var.prefix}
+              config: ${workspace.file_path}/src/extraction_config.json
+              sql_dir: ${workspace.file_path}/src
         # >>> localize
         - task_key: localize
           depends_on:
@@ -123,18 +110,52 @@ resources:
                 package: pytesseract>=0.3.10
             - pypi:
                 package: rapidfuzz>=3
-          spark_python_task:
-            python_file: src/localize.py
-            parameters:
-              - --catalog
-              - ${var.catalog}
-              - --schema
-              - ${var.schema}
-              - --prefix
-              - ${var.prefix}
-              - --sql-dir
-              - ${workspace.file_path}/src
+          notebook_task:
+            notebook_path: src/localize.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              prefix: ${var.prefix}
+              sql_dir: ${workspace.file_path}/src
         # <<< localize
+        # >>> review_queue
+        # Refreshes the review app's copy of <prefix>_review_candidates: a TRIGGERED synced table syncs only when its
+        # pipeline runs (a "Database Table Sync pipeline" task).
+        - task_key: review_queue
+          depends_on:
+            - task_key: extract
+          pipeline_task:
+            pipeline_id: <sync_pipeline_id>
+        # <<< review_queue
+    # >>> review_sync
+    review_sync:
+      name: doc review sync ${var.prefix}
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+      trigger:
+        pause_status: UNPAUSED
+        table_update:
+          table_names:
+            - ${var.history_table}
+          condition: ANY_UPDATED
+          min_time_between_triggers_seconds: 60
+          wait_after_last_change_seconds: 61  # must be over 60
+      tasks:
+        - task_key: apply_decisions
+          max_retries: 2  # a concurrent extraction run can conflict on the same document; a retry applies it
+          min_retry_interval_millis: 60000
+          notebook_task:
+            notebook_path: src/extract.py
+            base_parameters:
+              stage: decisions
+              history_table: ${var.history_table}
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              prefix: ${var.prefix}
+              config: ${workspace.file_path}/src/extraction_config.json
+              sql_dir: ${workspace.file_path}/src
+    # <<< review_sync
 
 targets:
   # No `mode: development`: development mode forces triggers to PAUSED, and this job exists to react to new files.

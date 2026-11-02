@@ -21,9 +21,9 @@ ROOT = SKILLS_DIR.parent
 INSTALLER = ROOT / "install.ps1"
 HOSTS = [h for h in ("pwsh", "powershell") if shutil.which(h)]
 pytestmark = pytest.mark.skipif(not HOSTS, reason="no PowerShell installed")
-BASE_SKILLS = ["databricks-ai-functions", "databricks-apps-python", "databricks-core", "databricks-dabs", "databricks-jobs",
+BASE_SKILLS = ["databricks-ai-functions", "databricks-apps", "databricks-apps-python", "databricks-core", "databricks-dabs", "databricks-jobs",
                "databricks-mlflow-evaluation", "databricks-serverless", "databricks-serverless-migration",
-               "databricks-unity-catalog", "databricks-unity-gateway", "databricks-vector-search"]
+               "databricks-lakebase", "databricks-unity-catalog", "databricks-unity-gateway", "databricks-vector-search"]
 MLFLOW = ["agent-evaluation", "mlflow-onboarding"]
 
 # Stand-in AI Dev Kit install.ps1: records how it was called, then writes base skill folders the way
@@ -147,7 +147,7 @@ def test_installs_base_skills_by_name_then_forge(env: dict, host: str):
 @pytest.mark.parametrize("host", HOSTS)
 def test_bash_style_flags_and_dry_run(env: dict, host: str):
     result = run(env, host, "--dir", str(env["project"]), "--tools", "claude", "--dry-run")
-    assert "11 stable skills" in result.stdout and "Dry run" in result.stdout
+    assert "13 stable skills" in result.stdout and "Dry run" in result.stdout
     assert not list(env["project"].iterdir()) and not list(env["log"].iterdir())
 
 

@@ -49,6 +49,16 @@ The index's columns are the other half of the contract: `chunk_id` (primary key)
 - **Synthetic labels.** Each sampled chunk goes into `generate_evals_df` with its `chunk_id` as `doc_uri`, and `expected_retrieved_context[].doc_uri` maps each question back to its chunk's file and pages. Questions that come back without a known source are kept for `forge-doc-qa-agent` and skipped here.
 - **Thresholds.** 0.9 (document) and 0.8 (page) are starting floors, not measured ones. Synthetic questions come from one passage and usually name their entity, so they're easier than real questions. Calibrate on the first certification runs, especially `financebench-sec-filings`, whose near-duplicate filings (one company, several years) are the hard case for unfiltered search.
 
+## Job tasks are notebooks
+
+The job's three tasks (`parse.py`, `prep_chunks.py`, `sync_index.py`) are Databricks notebooks, run as notebook tasks, so users can open, change, and rerun them in the workspace (owner direction, 2026-11-01). Each one stays a plain Python file that runs locally through Databricks Connect too, and that the tests import:
+- The first line is `# Databricks notebook source`. `# MAGIC` lines and the cell separators are comments to Python.
+- Settings arrive as widgets named like the flags. `notebook_argv` turns them into the same flags argparse already reads, so both paths share `main(argv)`.
+- The run cell is guarded by `if __name__ == "__main__"`, so importing a notebook runs nothing.
+
+- **Packages come from `%pip`, not a job environment.** The base skills disagree on notebook tasks: `databricks-jobs` shows one with an `environment_key`, and `databricks-serverless` says notebook tasks "need nothing else". A pinned `%pip` cell works either way. `sync_index.py` upgrades the preinstalled `databricks-sdk`, so it restarts Python before importing it. Without a job environment, the tasks run on the workspace's default serverless environment version.
+- **Edits made in the workspace survive.** A deploy overwrites the workspace copies, so module 01 has the user export a changed notebook into the bundle's `src/` first. `render.py` writes a checksum line into every copy, after the notebook header. A copy that no longer matches the checksum is kept and listed under `kept_edited`, unless `--force` is passed. A copy without the line, from an older `render.py`, is replaced.
+
 ## Not yet verified in a workspace
 
 Nothing here has run against a workspace; the static tests cover rendering, SQL placeholders, chart cropping, and hit-rate scoring. Beyond the parse-stage assumptions in `structured-doc-extraction-design.md` (items 1, 2, 5, and 7 apply here), these are assumptions:
@@ -58,5 +68,11 @@ Nothing here has run against a workspace; the static tests cover rendering, SQL 
 3. `filters_json` with dict filters works with `query_type="HYBRID"` on STANDARD endpoints, as `VectorSearchRetrieverTool` sends them.
 4. Element `bbox` coordinates from `ai_parse_document` are in the pixel space of the page images it saves, so chart crops (`crop_box`) land on the figure.
 5. Members of the `admins` group can create AI Search endpoints, and a user with `CAN USE` on an endpoint can read its permissions with `get-permissions` (module 00, step 6 falls back to asking when it can't).
+
+6. Notebook tasks without an `environment_key` run on a serverless environment new enough for VARIANT, `ai_parse_document`, and `ai_prep_search` (version 3 or later).
+7. `%pip install` in a serverless notebook task installs packages the workers see (pypdf and pillow are used in UDFs), and `dbutils.library.restartPython()` in a job run continues with the next cell.
+8. Job parameters (`full_refresh`) reach notebook tasks as widgets without being repeated in `base_parameters`.
+9. `render.py`'s checksum line sits between the notebook header and the first `# MAGIC %md` cell. It may make the workspace show that first cell as Python comments instead of markdown. The task runs the same either way.
+10. A notebook exported with `databricks workspace export --format SOURCE` keeps the checksum line, so an unedited export is still recognized. If the export reformats the file, the copy counts as edited and is kept, and only `--force` updates it.
 
 The `mixed-office-docs` scenario checks item 1 (`synthetic_rows_labeled`), `chart-heavy-deck` checks item 4, `financebench-sec-filings` checks items 2 and 3, and `requirements-asked-first` and `mixed-office-docs` check item 5.

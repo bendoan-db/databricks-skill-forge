@@ -1,3 +1,15 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Localize values to word boxes
+# MAGIC
+# MAGIC The optional `localize` task of the forge-structured-doc-extraction job (module 06): it OCRs each cited element
+# MAGIC with Tesseract, on the job's classic cluster, and finds the words behind each extracted value. The job passes its
+# MAGIC settings as the widgets at the top; to run it by hand, fill them in, on a cluster with Tesseract. To keep a change
+# MAGIC you make here, export this notebook into the bundle's `src/` folder before the next deploy, which otherwise
+# MAGIC replaces it (module 01 of the skill).
+
+# COMMAND ----------
+
 """Localize extracted values to word-level boxes with OCR (forge-structured-doc-extraction module 06).
 
 Third task of the extraction job, after extract.py. ai_extract v2.1 cites the whole parsed element a
@@ -6,8 +18,10 @@ OCRs the crop with Tesseract, and string-matches the value against the OCR words
 around the value itself. It writes <prefix>_localized, one row per (value, citation).
 
 Tesseract is a system binary that serverless compute doesn't have, so this task runs on a small classic
-job cluster whose init script installs it (see install_tesseract.sh and databricks.yml). It needs page
-images, so the parse stage must run with --page-images-path.
+job cluster whose init script installs it (see install_tesseract.sh and databricks.yml); the task's libraries
+add pytesseract and rapidfuzz. It's a Databricks notebook: the job passes its parameters as widgets, and run
+locally it takes the same settings as flags. It needs page images, so the parse stage must run with
+--page-images-path.
 
 The matching helpers are adapted from the advance-document-processing word-level citation pipeline.
 """
@@ -37,15 +51,35 @@ LOCALIZED_SCHEMA = (
     "localized BOOLEAN, error STRING, parsed_at TIMESTAMP"
 )
 
+# COMMAND ----------
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])  # a notebook has no __doc__
     p.add_argument("--catalog", required=True)
     p.add_argument("--schema", required=True)
     p.add_argument("--prefix", required=True)
     p.add_argument("--batch-size", type=int, default=25)
     p.add_argument("--sql-dir", default="", help="Directory holding localize.sql (default: next to this file)")
-    return p.parse_args()
+    return p
+
+
+def notebook_argv(parser: argparse.ArgumentParser) -> list[str]:
+    """The notebook's widgets as command-line flags. A job's notebook task passes each setting as a widget named
+    like its flag (--volume-path is volume_path); a required one left empty is reported as missing."""
+    argv = []
+    for action in parser._actions:  # noqa: SLF001 - argparse has no public list of options
+        if not action.option_strings or action.dest == "help":
+            continue
+        dbutils.widgets.text(action.dest, "" if action.default is None else str(action.default))  # noqa: F821
+        value = dbutils.widgets.get(action.dest)  # noqa: F821 - dbutils exists in Databricks notebooks
+        if value or action.default is not None:
+            argv += [action.option_strings[0], value]
+    return argv
+
+
+def script_dir() -> Path:
+    """This file's folder: next to the script, or a notebook's own workspace folder, its working directory."""
+    return Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 
 
 def load_sections(path: Path) -> dict[str, str]:
@@ -84,6 +118,7 @@ def build_params(args: argparse.Namespace) -> dict[str, str]:
         "localized_table": table("localized"),
     }
 
+# COMMAND ----------
 
 # --- geometry ------------------------------------------------------------------------------------------
 
@@ -126,6 +161,7 @@ def union_box(boxes):
 def to_page_coords(local_box, origin):
     return [local_box[0] + origin[0], local_box[1] + origin[1], local_box[2] + origin[0], local_box[3] + origin[1]]
 
+# COMMAND ----------
 
 # --- text ----------------------------------------------------------------------------------------------
 
@@ -251,6 +287,7 @@ def locate(value, kind, element_text, tokens, origin):
     page_box = to_page_coords(box, origin) if box else None
     return page_box, round(score, 1), matched, bool(page_box) and score >= MATCH_THRESHOLD[kind]
 
+# COMMAND ----------
 
 # --- OCR (runs on the job cluster) -----------------------------------------------------------------------
 
@@ -291,8 +328,8 @@ def get_spark():
     return DatabricksSession.builder.serverless().getOrCreate()
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     import pandas as pd
     import pytesseract
 
@@ -305,7 +342,7 @@ def main() -> None:
         ) from None
 
     params = build_params(args)
-    sql_dir = Path(args.sql_dir) if args.sql_dir else Path(__file__).resolve().parent
+    sql_dir = Path(args.sql_dir) if args.sql_dir else script_dir()
     sections = load_sections(sql_dir / "localize.sql")
     spark = get_spark()
 
@@ -401,6 +438,8 @@ def main() -> None:
         "meets_gate": hit_rate is not None and hit_rate >= MIN_HIT_RATE,
     }))
 
+# COMMAND ----------
 
+# As a job's notebook task, the settings arrive as widgets; run as a script, as command-line flags.
 if __name__ == "__main__":
-    main()
+    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)

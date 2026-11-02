@@ -12,6 +12,7 @@ Check the typed tables the job publishes, walk the user through the review queue
 For each document type, `extract.py` writes:
 - **`<prefix>_<type>`:** one row per document (or packet sub-document), with `path`, `file_name`, `segment_id`, and 1-based `page_numbers`. Every scalar field is a typed column, with a `<column>__confidence` column next to it. Nested objects flatten with `__`, so `gross.current` becomes `gross__current`. Arrays of scalars are `ARRAY` columns.
 - **`<prefix>_<type>__<field>`:** for each array of objects, one row per item, keyed by `path`, `segment_id`, and `item_index`.
+- **Review decisions:** with the review app (module 07), a value a person approved or corrected replaces the model's, with `<column>__confidence` = 1.0. The row lists those fields in `reviewed_fields`, with the latest decision's `reviewed_at`. `<prefix>_decisions` holds the decisions, and is empty without the app.
 
 All typed tables have Change Data Feed on, so downstream jobs, or an AI Search index, can follow them. Rows are replaced when their document is re-parsed, and removed when it leaves the volume.
 
@@ -19,7 +20,7 @@ All typed tables have Change Data Feed on, so downstream jobs, or an AI Search i
 
 | `reason` | Meaning |
 |---|---|
-| `low_confidence` | A value with `confidence` below `review_threshold` |
+| `low_confidence` | A value with `confidence` below `review_threshold`, and no review decision |
 | `unclassified` | A segment labeled `other`, or with no label |
 | `low_class_confidence` | A segment whose classification confidence is below `review_threshold` |
 | `extract_error` | `ai_extract` failed on a segment; `value` holds the error |
@@ -34,7 +35,7 @@ All typed tables have Change Data Feed on, so downstream jobs, or an AI Search i
    SELECT reason, doc_type, count(*) AS items FROM <catalog>.<schema>.<prefix>_review GROUP BY ALL ORDER BY items DESC;
    ```
 
-2. **Walk through the review queue with the user.** Show the fields with the most low-confidence values, and open one or two documents for each to see why. Typical causes are a vague description, a field that is often absent, or poor scans. Fix descriptions in module 03. Changing `review_threshold` only needs a render and a deploy: the view is recreated on the next run.
+2. **Walk through the review queue with the user.** Show the fields with the most low-confidence values, and open one or two documents for each to see why. Typical causes are a vague description, a field that is often absent, or poor scans. Fix descriptions in module 03. Changing `review_threshold` only needs a render and a deploy: the view is recreated on the next run. With the review app (`review_app` is `true`), module 07 puts the remaining values in front of the reviewers.
 
 3. **Share only on request.** Ask who should read the tables. Grant `SELECT` only to the users or groups the user names. **Load:** `databricks-unity-catalog` `references/1-access-control.md` for the grant syntax and the `USE CATALOG`/`USE SCHEMA` it needs. The review view shows values from every document, so grant it as narrowly as the tables.
 

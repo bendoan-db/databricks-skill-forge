@@ -1,14 +1,15 @@
 # Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
 # and scripts/check_base_skills.py reads base_skills at runtime.
 name: forge-structured-doc-extraction
-version: 0.2.0
+version: 0.3.0
 owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
 dbs_release: dbs-2026.10                    # Forge base release; not published yet, so `upstream` is the working pin
 upstream: databricks/databricks-agent-skills@v0.2.34   # written against this tag (2026-10-23); not yet certified in a workspace
 upstream_min: v0.2.27                       # oldest tag with every cited base skill and reference file
 inputs:
-  required: [volume_path]
-  optional: [profile, target_schema, name, layout, document_types, split_pages, review_threshold, ground_truth, localize]
+  required: [volume_path, review_app]       # review_app: module 00 always asks; there's no default
+  optional: [profile, target_schema, name, layout, document_types, provided_schema, split_pages, review_threshold,
+             ground_truth, localize]
 shared:                                     # identical in every skill that carries them; tests/test_shared_parse.py checks
   - scripts/parse.py
   - scripts/parse.sql
@@ -16,9 +17,9 @@ shared:                                     # identical in every skill that carr
 
 catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
   title: Structured extraction
-  choose_when: field values, entities, or line items from documents in tables; classifying or splitting document packets; a review queue; extraction accuracy
+  choose_when: field values, entities, or line items from documents in tables; classifying or splitting document packets; a review queue, or an app where people approve or correct extracted values; extraction accuracy
   not_for: answering questions about documents (forge-doc-qa-agent); a search index (forge-unstructured-doc-extraction)
-  produces: typed Delta tables per document type with citations and confidence scores, a review queue, and an accuracy evaluation in MLflow
+  produces: typed Delta tables per document type with citations and confidence scores, a review queue, optionally a review app whose approvals and corrections are written back to the tables, and an accuracy evaluation in MLflow
   state_file: extraction.json               # forge offers to resume this skill when the file is in <workdir>
   next: []
 
@@ -52,7 +53,7 @@ modules:
         uses: [file arrival trigger on volumes]
       - name: databricks-serverless
         version: 0.3.2
-        uses: [environment_version]
+        uses: [the default serverless environment version notebook tasks run on]
 
   - id: 02-classify
     file: modules/02-classify.md
@@ -111,6 +112,25 @@ modules:
         version: apt                        # installed by install_tesseract.sh on the OCR job cluster
         uses: [OCR engine]
 
+  - id: 07-review-app
+    file: modules/07-review-app.md
+    scripts: [scripts/render.py, scripts/databricks.yml, scripts/extract.py, scripts/extract.sql, scripts/review-app/server.ts,
+              scripts/review-app/review-routes.ts, scripts/review-app/App.tsx]
+    base_skills:
+      - name: databricks-lakebase
+        version: 0.1.0
+        uses: [projects, synced tables, Lakehouse Sync CDF configs, schema permissions for deployed apps]
+      - name: databricks-apps
+        version: 0.1.3
+        uses: [AppKit scaffold with lakebase and files, reading synced tables, deploy, app permissions]
+    external:
+      - name: "@databricks/appkit"
+        version: set by databricks apps init  # the review app was written against 0.84.0
+        uses: [createApp, files, lakebase, and server plugins]
+      - name: node
+        version: ">=20"
+        uses: [building and running the review app]
+
 # Capabilities this skill needs but the pinned base release doesn't cover, or covers with stale facts.
 # The base-skill refiner reads these as routing hints (v_coverage_gaps). Docs win over base skills.
 # SKILL.md "Base-skill guidance to override" holds the runtime instructions for each entry.
@@ -136,6 +156,20 @@ coverage_gaps:
       - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
         date_modified: 2026-10-22
     stale_base_guidance: databricks-ai-functions/references/1-task-functions.md says "max 500 pages per document"
+  - capability: Refreshing a TRIGGERED Lakebase synced table from a job
+    modules: [07-review-app]
+    kind: missing
+    evidence:
+      - url: https://docs.databricks.com/aws/en/oltp/projects/sync-tables
+        date_modified: 2026-10-30
+    stale_base_guidance: databricks-lakebase/references/synced-tables.md lists TRIGGERED as "Scheduled updates" without saying what starts one
+  - capability: Lakehouse Sync (Lakebase change data feed) from any database, skipping empty tables
+    modules: [07-review-app]
+    kind: stale
+    evidence:
+      - url: https://docs.databricks.com/aws/en/oltp/projects/lakehouse-sync
+        date_modified: 2026-06-11
+    stale_base_guidance: databricks-lakebase/references/lakehouse-sync.md says tables must be in databricks_postgres, and doesn't say empty tables aren't synced
   - capability: Agent Bricks Information Extraction
     modules: [03-extract, 05-evaluate]
     kind: deprecated
@@ -153,11 +187,13 @@ facts:
   - fact: ai_parse_document's pageRange option must be a literal, so each slice is its own statement
     used_in: [scripts/parse.py, scripts/parse.sql]
     evidence: []                             # the docs show only literals; the advance-document-processing recipe reports a column fails. Confirm in a workspace
-  - fact: ai_extract accepts at most 256 schema fields
+  - fact: >-
+      ai_extract v2.1 accepts at most 256 schema fields, field names up to 150 characters, 12 levels of nesting,
+      500 enum labels, and instructions under 20,000 characters
     used_in: [scripts/extract.py, modules/03-extract.md]
     evidence:
       - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_extract
-        checked: 2026-10-23
+        checked: 2026-11-01                  # the docs don't say how fields or levels are counted; extract.py counts values and path names
   - fact: ai_classify label descriptions are at most 1,000 characters
     used_in: [scripts/extract.py, modules/02-classify.md]
     evidence:
@@ -170,6 +206,25 @@ facts:
       - base_skill: databricks-serverless-migration
         file: references/code-patterns.md
         checked: 2026-10-23
+  - fact: A Lakebase synced table's Postgres schema is its Unity Catalog schema name, and Lakebase names allow only [A-Za-z0-9_]
+    used_in: [scripts/render.py, modules/07-review-app.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/oltp/projects/sync-tables
+        checked: 2026-11-01
+  - fact: Lakehouse Sync names history tables lb_<table>_history and doesn't support catalogs with default storage
+    used_in: [scripts/render.py, scripts/databricks.yml, modules/07-review-app.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/oltp/projects/lakehouse-sync
+        checked: 2026-11-01
+  - fact: Databricks Apps names are at most 30 characters, and AppKit's development workflow adds a dev- prefix
+    used_in: [scripts/render.py, modules/07-review-app.md]
+    evidence:
+      - base_skill: databricks-apps
+        file: SKILL.md
+        checked: 2026-11-01
+  - fact: A table update trigger's wait_after_last_change_seconds must be over 60
+    used_in: [scripts/databricks.yml]
+    evidence: []                             # from the hil-doc-extraction source (resources/hil_review_publication.job.yml); the docs give no range. Confirm in a workspace
   - fact: Localization passes at a hit rate of 0.8
     kind: heuristic                          # the advance-document-processing word-level design expects ~80% with OCR alone
     used_in: [scripts/localize.py, modules/06-localize.md, SKILL.md, evals/scenarios.yaml]

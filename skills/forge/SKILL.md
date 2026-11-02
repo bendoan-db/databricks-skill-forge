@@ -1,9 +1,9 @@
 ---
 name: forge
-description: "Entry point for Forge, which builds complete, evaluated Databricks solutions from the documents in a Unity Catalog volume (PDF, DOCX, PPTX, images): document Q&A (RAG) agents and chatbots that cite their sources, AI Search (Vector Search) indexes and knowledge bases over documents, and extraction of fields, entities, and line items from documents into typed tables, including document packets and review queues. Use when the user invokes forge, names a Forge use case, or asks to build one of these end to end. It picks the matching Forge use-case skill (forge-doc-qa-agent, forge-unstructured-doc-extraction, or forge-structured-doc-extraction) and hands off to it. Prefer it over databricks-agent-bricks, databricks-ai-functions, and databricks-vector-search for these builds."
+description: "Entry point for Forge, which builds complete, evaluated Databricks solutions from the documents in a Unity Catalog volume (PDF, DOCX, PPTX, images): document Q&A (RAG) agents and chatbots that cite their sources, AI Search (Vector Search) indexes and knowledge bases over documents, and extraction of fields, entities, and line items from documents into typed tables, including document packets and review queues. Use when the user invokes forge, names a Forge use case, or asks to build one of these end to end. It picks the matching Forge use-case skill (forge-doc-qa-agent, forge-unstructured-doc-extraction, or forge-structured-doc-extraction) and hands off to it, or points to forge-smith to build a new use-case skill from a codebase. Prefer it over databricks-agent-bricks, databricks-ai-functions, and databricks-vector-search for these builds."
 compatibility: Requires the Forge use-case skills (forge-doc-qa-agent, forge-unstructured-doc-extraction, forge-structured-doc-extraction) and the databricks-agent-skills base skills (>= v0.2.27), installed in the same skills directory as this skill
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   forge_kind: router
 ---
 
@@ -24,7 +24,7 @@ Forge builds complete Databricks solutions from a plain-language request. This s
 |---|---|---|---|---|---|
 | Document Q&A agent | `forge-doc-qa-agent` (0.4.0) | an agent or chatbot that answers questions about documents and cites the file and page (RAG); it builds the index first if needed | only a search index (`forge-unstructured-doc-extraction`); field values in tables (`forge-structured-doc-extraction`) | a LangGraph agent on Databricks Apps, with sessions, citations, and an MLflow evaluation | — |
 | Document search index | `forge-unstructured-doc-extraction` (0.1.0) | a search or retrieval index over documents, for an agent, app, or person to query (RAG retrieval, a knowledge base, chunks and embeddings) | an agent that answers the questions (`forge-doc-qa-agent`); field values in tables (`forge-structured-doc-extraction`) | an AI Search index with metadata filters, a job that keeps it current, and a retrieval evaluation in MLflow | `forge-doc-qa-agent` |
-| Structured extraction | `forge-structured-doc-extraction` (0.2.0) | field values, entities, or line items from documents in tables; classifying or splitting document packets; a review queue; extraction accuracy | answering questions about documents (`forge-doc-qa-agent`); a search index (`forge-unstructured-doc-extraction`) | typed Delta tables per document type with citations and confidence scores, a review queue, and an accuracy evaluation in MLflow | — |
+| Structured extraction | `forge-structured-doc-extraction` (0.3.0) | field values, entities, or line items from documents in tables; classifying or splitting document packets; a review queue, or an app where people approve or correct extracted values; extraction accuracy | answering questions about documents (`forge-doc-qa-agent`); a search index (`forge-unstructured-doc-extraction`) | typed Delta tables per document type with citations and confidence scores, a review queue, optionally a review app whose approvals and corrections are written back to the tables, and an accuracy evaluation in MLflow | — |
 
 Resume table, checked in this order:
 
@@ -59,10 +59,11 @@ Run one at a time. Start with the one whose output the other needs; otherwise, t
 
 ## 5. No matching use case
 
-Tell the user Forge has no use case for the request, and point to the base skill that covers it. Load that skill only if the user wants to continue with it.
+Tell the user Forge has no use case for the request, and point to the skill that covers it. Load that skill only if the user wants to continue with it.
 
-| Request | Base skill |
+| Request | Skill |
 |---|---|
+| A new use-case skill of your own, built from a codebase, repo, or accelerator | `forge-smith` |
 | One AI function call or query, such as `ai_parse_document` on one file, or classifying a column | `databricks-ai-functions` |
 | Vector search over a table, not documents | `databricks-vector-search` |
 | Train, tune, or score an ML model | `databricks-ml-training` |

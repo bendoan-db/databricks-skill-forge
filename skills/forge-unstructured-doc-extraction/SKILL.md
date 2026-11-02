@@ -36,6 +36,7 @@ Consumers: forge-doc-qa-agent, or any agent or app; doc-index.json describes the
 - `<workdir>/doc-index.json` holds every resolved value. Module 00 creates it, each module reads it first, and you record what a module adds before you move on. In commands, `<key>` means the value of `key` in that file, for example `<profile>` or `<prefix>`. `forge-doc-qa-agent` reads it to find the index, and never writes it.
 - A **Load:** line names a base skill, and usually one reference file in it, to read at that step. Don't load base skills up front, and read only the file named.
 - Scripts declare their own dependencies, so run them with `uv run <skill>/scripts/<file>.py` from any directory. Use `render.py` to fill templates. Never fill `<...>` placeholders in `scripts/` by hand.
+- The job's tasks are Databricks notebooks, copied to `<name>-index/src/` and deployed to the workspace, where users can change them. Module 01, Editing the job's notebooks, says how to keep a change.
 
 ## Inputs
 

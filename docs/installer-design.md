@@ -109,7 +109,8 @@ Genie Code in the workspace loads skills from `/Users/<user>/.assistant/skills`,
 - The Genie Code notebook in a workspace:
   - writing `.assistant` folders through `/Workspace` on serverless;
   - egress to GitHub from serverless;
-  - importing the release's `install_genie_code.py` as a notebook.
+  - importing the release's `install_genie_code.py` as a notebook;
+  - how the pipeline skills' task scripts land. They're source-format notebooks (`# Databricks notebook source`). Written through `/Workspace`, they could be stored as notebooks without their `.py` extension, and `render.py` copies them by that name. If they are, write them as workspace files, or leave the extension check to `render.py`.
 - How Genie Code treats two skills with the same name: a base skill in both the user and workspace folders, or next to the CLI's `.system` copy.
 - `databricks workspace export-dir` with these files and `--overwrite`. It doesn't remove files that a newer version dropped.
 - Whether the use-case workflows run in Genie Code in a notebook, since their modules run scripts with `uv run` and deploy with the `databricks` CLI.

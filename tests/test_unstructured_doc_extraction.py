@@ -1,6 +1,7 @@
 """Checks for skills/forge-unstructured-doc-extraction that need no workspace (cross-skill checks are in test_skills.py)."""
 
 import argparse
+import ast
 import json
 from pathlib import Path
 
@@ -95,12 +96,41 @@ def test_render_round_trips_values(state_file: Path):
     job = parsed["resources"]["jobs"]["doc_index"]
     assert [t["task_key"] for t in job["tasks"]] == ["parse", "chunk", "sync_index"]
     assert job["trigger"]["file_arrival"]["url"] == "${var.volume_path}/"
-    sync = job["tasks"][2]["spark_python_task"]["parameters"]
-    assert sync[sync.index("--index-name") + 1] == "${var.catalog}.${var.schema}.${var.index_name}"
+    assert "environments" not in job and not any("environment_key" in t for t in job["tasks"])  # notebooks %pip
+    sync = job["tasks"][2]["notebook_task"]
+    assert sync["notebook_path"] == "src/sync_index.py"
+    assert sync["base_parameters"]["index_name"] == "${var.catalog}.${var.schema}.${var.index_name}"
     assert variables["index_name"]["default"] == "sec_filings_index"
-    assert sorted(p.name for p in (state_file.parent / "filings-index" / "src").iterdir()) == sorted(
+    src = state_file.parent / "filings-index" / "src"
+    assert sorted(p.name for p in src.iterdir()) == sorted(
         ["parse.py", "parse.sql", "prep_chunks.py", "prep_chunks.sql", "sync_index.py"]
     )
+    notebook = (src / "prep_chunks.py").read_text().splitlines()
+    assert notebook[0] == "# Databricks notebook source" and notebook[1].startswith("# Copied from " + SKILL)
+
+
+def parser_of(script: str) -> argparse.ArgumentParser:
+    """A notebook's argument parser. sync_index.py imports databricks-sdk, which these checks don't install, so
+    its build_parser is compiled on its own."""
+    if script != "sync_index":
+        return load_script(SKILL, script).build_parser()
+    tree = ast.parse((SCRIPTS / "sync_index.py").read_text())
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_parser")
+    namespace = {"argparse": argparse}
+    exec(compile(ast.Module([function], []), "sync_index.py", "exec"), namespace)  # noqa: S102
+    return namespace["build_parser"]()
+
+
+@pytest.mark.parametrize("task, script", [("parse", "parse"), ("chunk", "prep_chunks"), ("sync_index", "sync_index")])
+def test_task_parameters_match_the_notebooks_flags(state_file: Path, task: str, script: str):
+    """Each base_parameters key is a widget the notebook reads, and every required one is passed."""
+    render("--state", str(state_file))
+    job = bundle_yaml(state_file)["resources"]["jobs"]["doc_index"]
+    params = next(t for t in job["tasks"] if t["task_key"] == task)["notebook_task"]["base_parameters"]
+    jobs_params = {p["name"] for p in job["parameters"]}  # pushed down to every notebook task as widgets
+    actions = [a for a in parser_of(script)._actions if a.option_strings and a.dest != "help"]
+    assert set(params) <= {a.dest for a in actions}
+    assert {a.dest for a in actions if a.required} <= set(params) | jobs_params
 
 
 def test_render_chart_insights_needs_page_images(state_file: Path):
@@ -121,6 +151,38 @@ def test_render_protects_hand_edits(state_file: Path):
     assert render("--state", str(state_file), check=False).returncode == 1
     render("--state", str(state_file), "--force")
     assert "triggers_seconds: 600" not in target.read_text()
+
+
+def test_render_keeps_an_edited_notebook_copy(state_file: Path):
+    render("--state", str(state_file))
+    copy = state_file.parent / "filings-index" / "src" / "prep_chunks.py"
+    copy.write_text(copy.read_text().replace("MIN_CROP_PIXELS = 32", "MIN_CROP_PIXELS = 64"))  # edited in the workspace
+    summary = json.loads(render("--state", str(state_file)).stdout)
+    assert summary["kept_edited"] == [str(copy)] and "MIN_CROP_PIXELS = 64" in copy.read_text()
+    render("--state", str(state_file), "--force")
+    assert "MIN_CROP_PIXELS = 32" in copy.read_text()
+
+
+def test_render_replaces_an_unmarked_copy_from_an_older_render(state_file: Path):
+    copy = state_file.parent / "filings-index" / "src" / "sync_index.py"
+    copy.parent.mkdir(parents=True)
+    copy.write_text('"""An older copy, without the checksum line."""\n')
+    summary = json.loads(render("--state", str(state_file)).stdout)
+    assert str(copy) in summary["written"] and summary["kept_edited"] == []
+    assert copy.read_text().startswith("# Databricks notebook source\n# Copied from")
+
+
+def test_prep_chunks_reads_its_settings_from_widgets():
+    """As a job's notebook task, prep_chunks.py reads its settings from widgets named like its flags."""
+    values = {"catalog": "main", "schema": "docs", "prefix": "filings", "full_refresh": "true"}
+    widgets = type("FakeWidgets", (), {"text": lambda self, name, default: values.setdefault(name, default),
+                                       "get": lambda self, name: values[name]})()
+    prep_chunks.dbutils = type("FakeDbutils", (), {"widgets": widgets})()
+    try:
+        args = prep_chunks.build_parser().parse_args(prep_chunks.notebook_argv(prep_chunks.build_parser()))
+    finally:
+        del prep_chunks.dbutils
+    assert (args.prefix, args.full_refresh, args.chart_insights, args.metadata_schema) == ("filings", "true", "false", "")
 
 
 def test_render_schedule_replaces_file_arrival(state_file: Path):

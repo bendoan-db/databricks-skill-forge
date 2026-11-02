@@ -19,7 +19,7 @@ Set up the bundle-managed Lakeflow job and parse every supported file in the vol
    uv run <skill>/scripts/render.py --state <workdir>/extraction.json
    ```
 
-   This writes `<workdir>/<name>-extract/databricks.yml` and `src/extraction_config.json`, and copies the job's scripts to `src/`. Until `document_types` is recorded, the job's trigger is rendered `PAUSED`, so new files don't start runs with nothing to extract. To change a value later, edit `extraction.json` and render again. The script stops rather than overwrite a file that was edited by hand.
+   This writes `<workdir>/<name>-extract/databricks.yml` and `src/extraction_config.json`, and copies the job's notebooks and SQL to `src/`. Until `document_types` is recorded, the job's trigger is rendered `PAUSED`, so new files don't start runs with nothing to extract. To change a value later, edit `extraction.json` and render again. The script stops rather than overwrite a file that was edited by hand.
 
 3. **Validate and deploy.** Deploying creates the job but doesn't run it. **Load:** `databricks-dabs` (validate, deploy, and run).
 
@@ -45,6 +45,19 @@ Set up the bundle-managed Lakeflow job and parse every supported file in the vol
 - **Split pages** (`split_pages` on): each page file is parsed once into `<prefix>_page_files`, then each folder's pages are assembled into one `<prefix>_parsed` row (`parse_mode = 'assembled'`), ordered by the number in the file names, else by the printed page numbers, else by file name.
 - **An empty listing** skips deletions instead of wiping the tables.
 
+## Editing the job's notebooks
+
+The job's tasks are Databricks notebooks (`parse`, `extract`, and `localize`), deployed from `<workdir>/<name>-extract/src/` to the bundle's folder in the workspace. `databricks bundle summary --profile <profile>` shows that folder as `file_path`; the notebooks are in its `src/`, without the `.py` extension. The user can open one there, change it, and run it by hand with the widgets at its top, which the job fills in on its runs.
+
+A deploy replaces the workspace copies with the local ones. To keep a change made in the workspace, export it into the bundle first:
+
+```bash
+databricks workspace export <file_path>/src/<notebook> --format SOURCE --file <workdir>/<name>-extract/src/<notebook>.py --profile <profile>
+databricks workspace export <file_path>/src/<file>.sql --format AUTO --file <workdir>/<name>-extract/src/<file>.sql --profile <profile>   # the SQL files are workspace files
+```
+
+`render.py` keeps an edited copy when it renders again, and lists it under `kept_edited`. `--force` replaces it with the skill's version. A kept copy doesn't pick up later changes to the skill, so tell the user which files are kept.
+
 ## Verify
 
 ```sql
@@ -65,7 +78,8 @@ WHERE parse_error IS NOT NULL LIMIT 20;
 
 | Symptom | Fix |
 |---|---|
-| `ai_parse_document` not found / VARIANT unsupported | Serverless environment must be ≥ 3 (`environment_version` in `scripts/databricks.yml`; **load** `databricks-serverless`); on classic compute DBR 17.3+ |
+| `ai_parse_document` not found / VARIANT unsupported | The notebook tasks run on the workspace's default serverless environment, which must be version 3 or later. Ask an admin to set it to the latest version (**load** `databricks-serverless`); on classic compute, DBR 17.3+ |
+| `No module named 'pypdf'` in the `parse` task | The notebook's `%pip install` cell failed: the serverless environment needs egress to PyPI or a mirror the workspace can reach |
 | AI function unavailable in region | Check AI Functions region availability (`databricks-ai-functions`); no workaround in-skill |
 | `PERMISSION_DENIED` reading the volume | The job runs as the deployer; needs `READ VOLUME` + `USE CATALOG`/`USE SCHEMA` (**load** `databricks-unity-catalog` `references/6-volumes.md`) |
 | Job doesn't trigger on new files | Expected until `document_types` exists (the trigger is `PAUSED`). After that, a `mode: development` target would force it to PAUSED, so the template has none; **load** `databricks-jobs` `references/triggers-schedules.md#file-arrival-trigger` |

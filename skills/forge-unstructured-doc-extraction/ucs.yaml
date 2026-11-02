@@ -58,7 +58,7 @@ modules:
         uses: [file arrival trigger on volumes]
       - name: databricks-serverless
         version: 0.3.2
-        uses: [environment_version]
+        uses: [default serverless environment version for notebook tasks]
 
   - id: 02-chunk-index
     file: modules/02-chunk-index.md

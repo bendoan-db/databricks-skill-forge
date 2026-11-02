@@ -8,7 +8,7 @@ defaults:
   harness:
     entry: forge                             # each run starts as `/forge <scenario description>`; routing evals are in skills/forge/evals/routing.yaml
     auto_approve_cost_gates: sandbox_only    # never auto-approve outside the certification workspace
-    teardown: [job, tables, review_view, page_images_volume]
+    teardown: [job, tables, review_view, page_images_volume, review_app, synced_table, cdf_config, lakebase_project]   # review_* only where module 07 ran
     upstream_versions: [v0.2.27, latest]     # databricks-agent-skills installed next to the skill: ucs.yaml upstream_min, and the newest tag
   thresholds:                                # same floors as scripts/evaluate.py THRESHOLDS
     classification_accuracy: 0.95
@@ -29,6 +29,7 @@ scenarios:
     inputs:
       layout: single_type
       localize: true
+      review_app: false
       document_types: >-
         {"paystub": {"schema": "<ADP ai-extract-word-level-citation/bundle/src/02_extract_flat.py PAYSTUB_SCHEMA>"}}
     checks:
@@ -36,6 +37,7 @@ scenarios:
       - extract_errors == 0
       - field_accuracy >= thresholds.field_accuracy
       - localization_hit_rate >= localization_hit_rate
+      - review_app_resources == 0            # answered no: no app, synced table, Lakebase project, or review_sync job
 
   - id: mortgage-packets
     description: Multi-document packets, page classification, multi-page grouping, and noise pages
@@ -44,6 +46,7 @@ scenarios:
       documents: document-page-classify-extraction/sample_data       # 4 loan files x 12 pages
     inputs:
       layout: packet
+      review_app: false
       document_types: >-
         "<ADP document-page-classify-extraction/bundle/src/03_classify_pages.py LABELS_JSON minus noise, with
         04_extract_fields.py EXTRACT_SCHEMAS; bank_statement and tax_return pages: multi>"
@@ -61,6 +64,7 @@ scenarios:
       ground_truth: ai-search-knowledge-base-creation/sample_data/ground_truth_doc_types.csv   # convert: one line per file with doc_type, empty fields
     inputs:
       layout: one_per_file
+      review_app: false
     checks:
       - classification_accuracy >= thresholds.classification_accuracy
       - unclassified_segments == 0
@@ -71,6 +75,7 @@ scenarios:
       generate: one 1,203-page PDF (pypdf; repeat a 3-page sample with printed page numbers)
     inputs:
       layout: single_type
+      review_app: false
     checks:
       - parsed.parse_mode == 'page_range'
       - parsed.page_count == 1203 and pages_in_variant == 1203
@@ -86,6 +91,7 @@ scenarios:
     inputs:
       layout: single_type
       split_pages: true
+      review_app: false
     checks:
       - parsed_documents == 2 and parsed.parse_mode == 'assembled'
       - assembled_printed_page_order == [1, 2, 3, 4, 5]   # both folders
@@ -98,3 +104,31 @@ scenarios:
       - changed_files == 1                   # parse.py summary for the triggered run
       - documents_processed == 1             # extract.py summary: only the new file is classified and extracted
       - deleted_file_rows == 0               # across segments, extracted, fields, and typed tables
+
+  - id: review-app-round-trip
+    description: >-
+      Yes to the review app in preflight: the pipeline, then the app, its queue, an approval and a correction made
+      through its API, and both decisions in the typed table
+    source:
+      repo: https://github.com/databricks-solutions/advance-document-processing
+      documents: ai-extract-word-level-citation/sample_data          # 4 synthetic paystubs
+    inputs:
+      layout: single_type
+      review_app: true
+      reviewers: [forge-certification-reviewers]   # a group in the certification workspace
+      review_threshold: 0.99                 # puts most values in the queue
+      document_types: >-
+        {"paystub": {"schema": "<ADP ai-extract-word-level-citation/bundle/src/02_extract_flat.py PAYSTUB_SCHEMA>"}}
+    steps:
+      - approve one queued value and correct another (with a note) through POST /api/review/decisions, as a named reviewer
+      - repeat the correction's request with the same decisionRequestId
+      - wait for the review_sync job run
+    checks:
+      - modules_run == [00, 01, 02, 03, 04, 05, 07]   # module 07 follows the pipeline without being asked for again
+      - review_queue_rows == review_view_low_confidence_rows_before_decisions
+      - decisions.approved == 1 and decisions.corrected == 1   # the repeated request isn't saved twice
+      - corrected_typed_value == corrected_value and corrected_confidence == 1.0
+      - both fields in reviewed_fields
+      - extracted_rows_unchanged                # <prefix>_extracted keeps the model's output
+      - review_view_excludes_decided_values
+      - app_permissions == named_reviewers_only

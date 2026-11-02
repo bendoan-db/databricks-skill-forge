@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .config import MODEL_RE
 
-PROMPT_VERSION = "2026-10-26.1"
+PROMPT_VERSION = "2026-11-02.1"
 PROMPTS = Path(__file__).resolve().parent / "prompts"
 MATERIALITY = ("none", "compatible", "material", "breaking")
 BUMPS = ("patch", "minor", "major")

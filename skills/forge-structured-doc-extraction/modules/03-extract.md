@@ -4,18 +4,36 @@ Design an `ai_extract` schema for each document type, then run classification an
 
 ## Inputs → outputs
 
-- **Inputs:** `document_types` (module 02), `<prefix>_parsed`, and the fields the user asked for.
+- **Inputs:** `document_types` (module 02), `<prefix>_parsed`, and the user's schema (`provided_schema`) or the fields they asked for.
 - **Outputs:** a `schema` (and optional `instructions`, `mode`) for each type in `extraction.json`; tables `<prefix>_segments`, `<prefix>_extracted` (raw `ai_extract` output per segment), and `<prefix>_fields` (one row per value).
 
 ## 1. Design the schemas
 
 **Load:** `databricks-ai-functions` `references/1-task-functions.md`, the `ai_extract` section (advanced schema, version 2.1 citations and confidence).
 
-For each type, write the schema from the user's field list and one or two sample documents of that type. The job turns each schema into a table, so it accepts this subset, which `render.py` checks:
-- **Field names** are snake_case without `__`, and not `value`, `confidence_score`, or `citation_ids` (the names of `ai_extract`'s per-value wrapper).
-- **Types:** `string`, `integer`, `number`, `boolean`, `enum` (with `labels`), `object` (with `properties`), and `array` (with `items` of a scalar type or an object). No arrays inside array items. At most 256 fields.
+The job turns each schema into a table, so it accepts this subset of `ai_extract` version 2.1, which `render.py` checks:
+- **Field names** are snake_case without `__`, at most 150 characters, and not `value`, `confidence_score`, or `citation_ids` (the names of `ai_extract`'s per-value wrapper).
+- **Types:** `string`, `integer`, `number`, `boolean`, `enum` (with at most 500 `labels`), `object` (with `properties`), and `array` (with `items` of a scalar type or an object). No arrays inside array items.
+- **Size:** at most 256 fields, counted as values (objects don't count), and 12 levels of nesting, counted as the names in a field's path (`gross.current` is 2). A type's `instructions` are under 20,000 characters.
 - **Descriptions** steer the model. State the format you want, such as "MM/DD/YYYY" or "USD, without $ or commas", and say when a field may be missing.
 - **Repeating rows** (line items, transactions, deductions) are an array of objects. Each becomes a child table, `<prefix>_<type>__<field>`, with one row per item.
+
+For each type, take one of two paths.
+
+**The user gave a schema in module 00 (`provided_schema`).** Convert it to this format, keeping the user's names, types, and descriptions where the rules allow:
+- **JSON Schema, a Pydantic model, or a table definition:** its top-level properties or columns are the fields. Nested objects and lists become `object` and `array`, enum values become `labels`, and formats, patterns, and field docs go in `description`.
+- **Names without types:** ask the user for each type, or make the field a `string`.
+- **A field that breaks a rule:** rename it (`Total Amount` becomes `total_amount`). Make an array inside array items a `string` of the joined values. Over 256 fields, cut the schema with the user to the fields they need.
+
+Show the user every change you made, and which document type each schema is for. A type the file doesn't cover takes the next path.
+
+**Otherwise, build the schema with the user, one step at a time:**
+1. List the fields they asked for in module 00. Open one or two parsed documents of the type (module 02, step 1's query), and suggest other values they print.
+2. For each field, agree on its name and type, and a description that gives its format and says whether it can be missing.
+3. Group repeating rows into an array of objects, and values that belong together (an address, or gross pay this period and year to date) into an object.
+4. Show the whole schema, and revise it until the user approves it.
+
+Record each approved schema as its type's `schema` in `document_types`, as in this example:
 
 ```json
 "paystub": {
@@ -33,7 +51,7 @@ For each type, write the schema from the user's field list and one or two sample
 }
 ```
 
-Show each schema to the user before running. Optional per type: `"mode": "precision"`, for long documents or many fields (see the decision table).
+Optional per type: `"mode": "precision"`, for long documents or many fields (see the decision table).
 
 ## 2. Render and deploy
 

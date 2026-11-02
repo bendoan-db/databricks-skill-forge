@@ -45,6 +45,23 @@ def test_catalog_is_up_to_date():
     assert tool.update(TEXT, tool.render()) == TEXT, "run `uv run tools/build_forge_catalog.py`"
 
 
+def test_manifest_is_up_to_date():
+    manifest = SKILLS_DIR.parent / "MANIFEST.md"
+    assert manifest.read_text() == catalog_tool().render_manifest(), "run `uv run tools/build_forge_catalog.py`"
+
+
+def test_manifest_lists_forge_and_every_use_case_but_not_smith():
+    rows = [line for line in (SKILLS_DIR.parent / "MANIFEST.md").read_text().splitlines() if line.startswith("| [`")]
+    listed = [re.match(r"\| \[`([a-z-]+)`\]", row).group(1) for row in rows]
+    assert sorted(listed) == sorted(["forge", *SKILLS]) and "forge-smith" not in listed
+    for row in rows:
+        name, what, given, made = (part.strip() for part in row.strip("|").split(" | "))
+        assert what and given and made, name
+    unstructured = next(row for row in rows if row.startswith("| [`forge-unstructured-doc-extraction`]"))
+    assert "**Required:** `volume_path`, `vs_endpoint`, `index_name`, `continuous_updates`" in unstructured
+    assert "Forge use case, normally started" not in "\n".join(rows) and " Use when " not in "\n".join(rows)
+
+
 def test_every_use_case_skill_is_routed():
     names = [entry["name"] for entry in MANIFEST["use_cases"]]
     assert sorted(names) == SKILLS, "forge.yaml use_cases must list every skill folder with a ucs.yaml"
@@ -64,7 +81,7 @@ def test_catalog_entries(skill: str):
 
 
 def test_routing_cases():
-    fallbacks = set(re.findall(r"`(databricks-[a-z-]+)`", section("5. No matching use case")))
+    fallbacks = set(re.findall(r"`(databricks-[a-z-]+|forge-smith)`", section("5. No matching use case")))
     handed_off = set()
     for case in ROUTING["cases"]:
         expect = case["expect"]

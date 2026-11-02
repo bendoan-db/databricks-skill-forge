@@ -117,3 +117,40 @@ def test_pdf_page_count():
     writer.write(buffer)
     assert parse.pdf_page_count(buffer.getvalue()) == 3
     assert parse.pdf_page_count(b"not a pdf") == -1
+
+
+class FakeWidgets:
+    """Stand-in for dbutils.widgets: a notebook task's parameters, keyed by widget name."""
+
+    def __init__(self, values: dict[str, str]):
+        self.values = values
+
+    def text(self, name: str, default: str) -> None:
+        self.values.setdefault(name, default)
+
+    def get(self, name: str) -> str:
+        return self.values[name]
+
+
+def test_notebook_widgets_become_flags():
+    """As a job's notebook task, parse.py reads its settings from widgets named like its flags."""
+    parse.dbutils = type("FakeDbutils", (), {"widgets": FakeWidgets({
+        "catalog": "main", "schema": "docs", "prefix": "contracts", "volume_path": "/Volumes/main/docs/contracts",
+        "description_element_types": "", "split_pages": "folder"})})()
+    try:
+        args = parse.build_parser().parse_args(parse.notebook_argv(parse.build_parser()))
+    finally:
+        del parse.dbutils
+    assert (args.catalog, args.volume_path, args.split_pages) == ("main", "/Volumes/main/docs/contracts", "folder")
+    assert args.description_element_types == ""  # an empty setting is kept, not replaced by the default
+    assert args.batch_size == 50 and args.page_images_path == ""
+
+
+def test_notebook_reports_a_missing_required_widget():
+    parse.dbutils = type("FakeDbutils", (), {"widgets": FakeWidgets({"catalog": "main"})})()
+    try:
+        argv = parse.notebook_argv(parse.build_parser())
+    finally:
+        del parse.dbutils
+    with pytest.raises(SystemExit):  # argparse: the following arguments are required: --schema, ...
+        parse.build_parser().parse_args(argv)
