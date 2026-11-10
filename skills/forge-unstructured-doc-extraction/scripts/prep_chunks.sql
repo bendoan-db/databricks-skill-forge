@@ -102,8 +102,8 @@ WHERE builtin IS NOT NULL;
 
 -- name: insert_batch_chart_insights
 -- chart_source vision: a figure with the parser's chart data is a chart; other described figures are classified
--- from their description, with ai_classify only on those. Each chart is cropped from its page image, or from its
--- PDF page rendered at 200 DPI (forge_crop), and read by the vision model, with the page context and the parser's
+-- from their description, with ai_classify only on those. Each chart is cropped from its page image, its PDF page
+-- rendered at 200 DPI, or its source image file (forge_crop), and read by the vision model, with the page context and the parser's
 -- data as hints. failOnError => false keeps one bad image from failing the batch; when the model fails, the reading
 -- falls back to the parser's data. Charts that can't be cropped are recorded by insert_batch_uncropped_charts.
 INSERT INTO {{chart_table}} BY NAME
@@ -147,12 +147,13 @@ FROM analyzed;
 
 -- name: insert_batch_uncropped_charts
 -- chart_source vision, after insert_batch_chart_insights: charts with the parser's chart data that got no reading
--- because they couldn't be cropped (a document that isn't a PDF, parsed without page images, or a tiny figure). They
+-- because they couldn't be cropped (a DOCX or PPTX parsed without page images, an image whose bbox doesn't fit it,
+-- or a tiny figure). They
 -- keep the parser's data as their reading, with an error saying why. A classified chart without chart data that
 -- can't be cropped isn't recorded: finding it again would mean classifying again.
 INSERT INTO {{chart_table}} BY NAME
 SELECT f.path, f.parsed_at, f.element_id, f.page_id, concat_ws('\n\n', nullif(f.context, ''), f.builtin) AS insight,
-  'not cropped: no page image and not a readable PDF page, or the figure is too small' AS error,
+  'not cropped: no page image and not a readable PDF page or image, or the figure is too small' AS error,
   current_timestamp() AS analyzed_at
 FROM batch_figures f
 WHERE f.builtin IS NOT NULL

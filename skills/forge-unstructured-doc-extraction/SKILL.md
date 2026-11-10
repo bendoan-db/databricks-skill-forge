@@ -53,7 +53,7 @@ Module 00 asks for the first four before anything else, and doesn't continue unt
 | `name` | derived from the volume name | Lowercase letters, digits, hyphens, ≤40 chars; the bundle is `<name>-index`. ≤17 chars when `forge-doc-qa-agent` will reuse it |
 | `metadata_schema` | none | Document-level fields used for filtering, such as `company`, `document_type`, `fiscal_year`. See module 02 |
 | `embedding_model` | `databricks-qwen3-embedding-0-6b`, else `databricks-gte-large-en` | Resolved from the workspace |
-| `page_images` | off | Saves rendered page images. `chart_insights` crops them, or renders PDF pages when they're off; split pages need them |
+| `page_images` | off | Saves rendered page images. `chart_insights` crops them; when they're off, it renders PDF pages and crops image files directly. DOCX, PPTX, and split pages need them |
 | `chart_insights` | off | Reads each chart before chunking, so its values reach the index (module 02) |
 | `chart_source` | `vision` | Only with `chart_insights`. `vision`: a vision model reads each chart crop. `builtin`: the parser's chart data, as a table; no model calls (module 02, step 3) |
 | `chart_model` | Claude Sonnet 5.5: `system.ai.claude-sonnet-5-5` | Only with `chart_insights`. Confirmed in `databricks ai-gateway list-model-services` |

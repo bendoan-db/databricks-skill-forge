@@ -26,8 +26,8 @@ The SQL lives in prep_chunks.sql. Each document is chunked once per parse: <pref
 the (path, parsed_at) this stage has processed, so ai_prep_search never reruns on an unchanged document,
 even one that yields no chunks. With --chart-insights true, each chart gets a reading, which is appended to
 its figure's description before chunking (ai_prep_search embeds figure descriptions, not the chart data in
-figure content). With --chart-source vision, the chart is cropped from its page image, or from the PDF page
-rendered at the parser's 200 DPI, and read by a vision model, with the page's title, units, and legend and the
+figure content). With --chart-source vision, the chart is cropped from its page image, from the PDF page
+rendered at the parser's 200 DPI, or from the source image file, and read by a vision model, with the page's title, units, and legend and the
 parser's chart data as context. With --chart-source builtin, the reading is the parser's chart data as a table,
 with that context: no crops and no model calls.
 """
@@ -66,6 +66,7 @@ CHART_SOURCES = ("vision", "builtin")
 MIN_CROP_PIXELS = 32
 CROP_PAD = 20         # boxes touch their content and move 2-3 px between parses
 PARSE_DPI = 200       # bbox coords are pixels of the page rendered at 200 DPI, like the saved page images
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".tif", ".tiff")  # image files parse.py accepts; each is one page
 CONTEXT_TYPES = ("title", "section_header", "caption")
 NEARBY_TYPES = ("text", "footnote")  # legends are often parsed as footnotes beside the chart
 MAX_CONTEXT_CHARS = 80               # short text anywhere on the page: units such as "In Millions"
@@ -216,18 +217,33 @@ def pdf_page(path: str, page_id: int):
     return _rendered[key]
 
 
+def fits(coord, size: tuple[int, int]) -> bool:
+    """True when a bbox lies inside an image of ``size``: the check that its coords are that image's pixels."""
+    box = _box(coord)
+    return box is not None and min(box) >= 0 and max(box[0], box[2]) <= size[0] and max(box[1], box[3]) <= size[1]
+
+
 def crop_figure(image_uri: str | None, coord: list[float] | None, path: str | None = None,
                 page_id: int | None = None) -> bytes | None:
-    """JPEG bytes of one figure cropped from its page image or, without one, from its PDF page rendered at
-    200 DPI; None when it can't be cropped (no image and not a PDF, an unreadable file, or a tiny figure)."""
+    """JPEG bytes of one figure cropped from its page image or, without one, from its PDF page rendered at 200 DPI,
+    or from the source file itself when it's an image. None when it can't be cropped: a document that isn't a PDF or
+    an image, an unreadable file, a tiny figure, or an image whose bbox doesn't fit inside it."""
     from PIL import Image
 
+    source = (path or "").removeprefix("dbfs:")
     try:
         if image_uri:
             with Image.open(image_uri.removeprefix("dbfs:")) as image:
                 page = image.convert("RGB")
-        elif path and path.lower().endswith(".pdf") and page_id is not None and page_id >= 0:
-            page = pdf_page(path, page_id).convert("RGB")
+        elif source.lower().endswith(".pdf") and page_id is not None and page_id >= 0:
+            page = pdf_page(source, page_id).convert("RGB")
+        elif source.lower().endswith(IMAGE_SUFFIXES) and page_id == 0:
+            # An image file is its own page: its bbox coords were its own pixels (scale 1) on the one PNG checked.
+            # A box that doesn't fit means another scale (a downscaled large scan, say), so it isn't cropped.
+            with Image.open(source) as image:
+                if not fits(coord, image.size):
+                    return None
+                page = image.convert("RGB")
         else:
             return None
     except (OSError, RuntimeError, IndexError):  # unreadable image or PDF (PdfiumError is a RuntimeError), bad page

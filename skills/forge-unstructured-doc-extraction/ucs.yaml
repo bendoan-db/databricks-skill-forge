@@ -193,6 +193,13 @@ facts:
         checked: 2026-10-28
       - workspace_run: 2026-11-09              # 5300 x 3000 px page image for a 1908 x 1080 pt page; pypdfium2 at 200/72 matches it pixel for pixel
   - fact: >-
+      For an image file (PNG, JPEG, TIFF), ai_parse_document bbox coords are pixels of the original image (scale 1),
+      so a chart can be cropped from the file; a box that doesn't fit inside the image isn't cropped
+    kind: heuristic                          # observed on one 800 x 600 PNG without DPI metadata; large scans, DPI metadata, JPEG, and multi-page TIFF untested
+    used_in: [scripts/prep_chunks.py, scripts/prep_chunks.sql, modules/02-chunk-index.md, modules/01-ingest-parse.md, SKILL.md]
+    evidence:
+      - workspace_run: 2026-11-10              # a grouped bar chart PNG: figure bbox [39, 43, 753, 592] and title [235, 3, 565, 29] crop the chart and the title exactly from the file
+  - fact: >-
       With figure descriptions on, a chart figure's content holds the parser's chart data as JSON (title "None", no
       units, series sometimes "Segment 1"), and ai_prep_search embeds the figure's description but not its content
     used_in: [scripts/prep_chunks.py, scripts/prep_chunks.sql, scripts/render.py, modules/02-chunk-index.md, SKILL.md]

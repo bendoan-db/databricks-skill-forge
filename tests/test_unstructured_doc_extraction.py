@@ -94,6 +94,21 @@ def test_crop_figure_renders_a_pdf_page_at_the_parsers_200_dpi(tmp_path: Path):
     assert prep_chunks.crop_figure(None, [100, 50, 300, 150], "/Volumes/x/deck.pptx", 0) is None  # not a PDF
 
 
+def test_crop_figure_crops_an_image_file_at_scale_1_only_when_the_box_fits(tmp_path: Path):
+    """An image file is its own page: on an 800 x 600 PNG (2026-11-10), the bbox coords were the file's pixels."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    import io
+
+    png = tmp_path / "chart.png"
+    Image.new("RGBA", (800, 600), (40, 40, 40, 255)).save(png)
+    image = prep_chunks.crop_figure(None, [39, 43, 753, 592], f"dbfs:{png}", 0)  # the figure box from that PNG
+    assert Image.open(io.BytesIO(image)).size == (754, 577)  # x 19-773 and y 23-600: padded by 20 px, clamped at the bottom
+    assert prep_chunks.crop_figure(None, [39, 43, 1506, 1184], str(png), 0) is None  # doesn't fit: another scale
+    assert prep_chunks.crop_figure(None, [39, 43, 753, 592], str(png), 1) is None    # an image has one page
+    assert prep_chunks.fits([0, 0, 800, 600], (800, 600)) and not prep_chunks.fits([-1, 0, 10, 10], (800, 600))
+
+
 # From ai_parse_document v2.0 on a quarterly earnings deck (2026-11-09): the chart's title and units are separate
 # elements, and on another page its legend is a footnote beside it, while its chart data names "Segment 1".
 PAGE_ONE = [
