@@ -183,17 +183,17 @@ def build_params(args: argparse.Namespace, columns: dict[str, str]) -> dict[str,
         "chart_labels": sql_string(json.dumps(CHART_LABELS)),
         "chart_model": sql_string(args.chart_model or DEFAULT_CHART_MODEL),
         "chart_prompt": sql_string(args.chart_prompt or DEFAULT_CHART_PROMPT),
-        "builtin_only": "true" if args.chart_source == "builtin" else "false",
     }
 
 # COMMAND ----------
 
 def crop_box(coord: list[float] | None, size: tuple[int, int], pad: int = CROP_PAD) -> tuple[int, int, int, int] | None:
     """Pixel box for a figure's bbox coord on a 200-DPI page image of ``size``, padded and clamped; None if too small."""
-    if not coord or len(coord) < 4:
+    coord = _box(coord)
+    if coord is None:
         return None
-    x0, x1 = sorted((float(coord[0]), float(coord[2])))
-    y0, y1 = sorted((float(coord[1]), float(coord[3])))
+    x0, x1 = sorted((coord[0], coord[2]))
+    y0, y1 = sorted((coord[1], coord[3]))
     width, height = size
     box = (max(0, int(x0) - pad), max(0, int(y0) - pad), min(width, int(x1) + pad), min(height, int(y1) + pad))
     if box[2] - box[0] < MIN_CROP_PIXELS or box[3] - box[1] < MIN_CROP_PIXELS:
@@ -240,6 +240,13 @@ def crop_figure(image_uri: str | None, coord: list[float] | None, path: str | No
     return buffer.getvalue()
 
 
+def _box(coord) -> list[float] | None:
+    """A bbox coord as four numbers, or None when it's missing, short, or holds nulls (a partial bbox)."""
+    if not isinstance(coord, (list, tuple)) or len(coord) < 4 or any(not isinstance(v, (int, float)) for v in coord[:4]):
+        return None
+    return [float(v) for v in coord[:4]]
+
+
 def _adjacent(a: list[float], b: list[float], gap: float) -> bool:
     """Boxes overlap on one axis and are within ``gap`` pixels on the other."""
     ax0, ax1 = sorted((a[0], a[2]))
@@ -255,17 +262,18 @@ def figure_context(page_elements: list[dict], figure_id: int) -> str:
     order: titles, section headers, and captions; short text anywhere on the page (units such as "In Millions");
     and text or footnotes beside the figure (legends)."""
     figure = next((e for e in page_elements if e.get("id") == figure_id), None)
-    if figure is None or not figure.get("coord"):
+    figure_box = _box(figure.get("coord")) if figure else None
+    if figure_box is None:
         return ""
     picked = []
     for element in page_elements:
         text = (element.get("content") or "").strip()
-        kind, coord = element.get("type"), element.get("coord")
-        if element is figure or not text or not coord or kind == "figure":
+        kind, coord = element.get("type"), _box(element.get("coord"))
+        if element is figure or not text or coord is None or kind == "figure":
             continue
         if (kind in CONTEXT_TYPES or (kind == "text" and len(text) <= MAX_CONTEXT_CHARS)
                 or (kind in NEARBY_TYPES and len(text) <= MAX_ADJACENT_CHARS
-                    and _adjacent(figure["coord"], coord, ADJACENT_GAP))):
+                    and _adjacent(figure_box, coord, ADJACENT_GAP))):
             picked.append((min(coord[1], coord[3]), min(coord[0], coord[2]), text))
     return "\n".join(text for *_, text in sorted(picked))
 
@@ -368,7 +376,12 @@ def main(argv: list[str] | None = None) -> None:
         set_batch_paths(batch)
         if charts:
             run("delete_batch_chart_insights")
-            run("insert_batch_chart_insights")
+            run("batch_figures")
+            if args.chart_source == "builtin":
+                run("insert_batch_builtin_insights")
+            else:
+                run("insert_batch_chart_insights")
+                run("insert_batch_uncropped_charts")
             run("batch_documents_with_charts")
         else:
             run("batch_documents")

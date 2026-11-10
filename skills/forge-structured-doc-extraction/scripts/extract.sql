@@ -400,7 +400,7 @@ USING (
   JOIN {{extracted_table}} x ON x.path = f.path AND x.segment_id = f.segment_id AND x.doc_type = f.doc_type
   LEFT JOIN field_specs spec
     ON spec.doc_type = f.doc_type AND spec.pattern = regexp_replace(f.field, '\\[[0-9]+\\]', '[]')
-  WHERE f.confidence < {{field_threshold}} OR (f.confidence IS NULL AND f.value IS NOT NULL)
+  WHERE round(f.confidence, 4) < {{field_threshold}} OR (f.confidence IS NULL AND f.value IS NOT NULL)
 ) s
 ON t.review_id = s.review_id
 WHEN MATCHED AND NOT (t.ai_value <=> s.ai_value AND t.confidence <=> s.confidence AND t.page_numbers <=> s.page_numbers
@@ -474,7 +474,7 @@ AS
 SELECT f.path, f.segment_id, f.doc_type, f.field, f.value, f.confidence,
   CASE WHEN f.confidence IS NULL THEN 'unscored' ELSE 'low_confidence' END AS reason
 FROM {{fields_table}} f
-WHERE (f.confidence < {{field_threshold}} OR (f.confidence IS NULL AND f.value IS NOT NULL))
+WHERE (round(f.confidence, 4) < {{field_threshold}} OR (f.confidence IS NULL AND f.value IS NOT NULL))
   AND NOT EXISTS (
     SELECT 1 FROM {{decisions_table}} d
     WHERE d.path = f.path AND d.segment_id = f.segment_id AND d.doc_type = f.doc_type AND d.field = f.field
@@ -482,14 +482,18 @@ WHERE (f.confidence < {{field_threshold}} OR (f.confidence IS NULL AND f.value I
   )
 UNION ALL
 SELECT path, segment_id, doc_type, CAST(NULL AS STRING), CAST(NULL AS STRING), class_confidence,
-  CASE
-    WHEN doc_type IS NULL OR doc_type = 'other' THEN 'unclassified'
-    WHEN class_confidence IS NULL THEN 'unscored_class'
-    ELSE 'low_class_confidence'
-  END
+  CASE WHEN doc_type IS NULL OR doc_type = 'other' THEN 'unclassified' ELSE 'low_class_confidence' END
 FROM {{segments_table}}
 WHERE doc_type IS NULL OR doc_type = 'other' OR class_confidence < {{review_threshold}}
-  OR (class_confidence IS NULL AND {{classified}})
+UNION ALL
+-- One row per document, not per segment: when ai_classify returns no scores, it usually returns none for a whole
+-- document, and a row per segment would bury the other items.
+SELECT path, CAST(NULL AS INT), CAST(NULL AS STRING), CAST(NULL AS STRING),
+  concat(CAST(count(*) AS STRING), ' classified segments without a classification confidence'), CAST(NULL AS DOUBLE),
+  'unscored_class'
+FROM {{segments_table}}
+WHERE {{classified}} AND class_confidence IS NULL AND doc_type IS NOT NULL AND doc_type <> 'other'
+GROUP BY path
 UNION ALL
 SELECT path, segment_id, doc_type, CAST(NULL AS STRING), extract_error, CAST(NULL AS DOUBLE), 'extract_error'
 FROM {{extracted_table}}

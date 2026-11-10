@@ -3,6 +3,7 @@
 import argparse
 import ast
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -59,7 +60,6 @@ def test_every_sql_placeholder_has_a_value():
         prep_chunks.render(sql, params)  # KeyError on a placeholder build_params doesn't fill
     assert params["chart_model"] == "'system.ai.claude-sonnet-5-5'"
     assert params["chart_prompt"] == "'It\\'s a chart'"
-    assert params["builtin_only"] == "false"
 
 
 def test_metadata_schema_rules():
@@ -113,6 +113,27 @@ PAGE_FOUR = [
     {"id": 25, "type": "footnote", "content": "General &\nAdministrative\n\nMarketing\n& Sales",
      "coord": [4335, 1608, 4924, 2334]},
 ]
+
+
+def test_ai_functions_run_only_on_filtered_rows_never_inside_a_case():
+    """Spark may evaluate every branch of a CASE, so an AI call there could run on rows that don't need it."""
+    sections = prep_chunks.load_sections(SCRIPTS / "prep_chunks.sql")
+    for name, sql in sections.items():
+        for case in re.findall(r"\bCASE\b.*?\bEND\b", sql, flags=re.S):
+            assert not re.search(r"\bai_(query|classify)\(", case), name
+    assert not re.search(r"\bai_(query|classify)\(", sections["batch_figures"] + sections["insert_batch_builtin_insights"])
+    vision = sections["insert_batch_chart_insights"]
+    assert "WHERE builtin IS NULL AND description IS NOT NULL" in vision and "WHERE image IS NOT NULL" in vision
+    assert "coalesce(answer.result, nullif(concat_ws(" in vision  # a failed reading keeps the parser's data
+    assert "NOT EXISTS" in sections["insert_batch_uncropped_charts"]
+
+
+def test_malformed_boxes_are_skipped_not_raised():
+    assert prep_chunks.crop_box([1, 2, None, 4], (100, 100)) is None and prep_chunks.crop_box([1, 2], (9, 9)) is None
+    page = [{**PAGE_ONE[3], "coord": [254, 711]}, PAGE_ONE[0]]
+    assert prep_chunks.figure_context(page, 6) == ""                    # the figure's own box is partial
+    page = [PAGE_ONE[3], {**PAGE_ONE[0], "coord": [281, None, 3191, 276]}, PAGE_ONE[2]]
+    assert prep_chunks.figure_context(page, 6) == "In Millions"         # a partial neighbor is left out
 
 
 def test_figure_context_finds_the_title_units_and_adjacent_legend():

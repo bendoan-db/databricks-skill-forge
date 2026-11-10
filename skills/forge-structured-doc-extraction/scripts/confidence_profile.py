@@ -31,7 +31,7 @@ from extract import field_threshold  # noqa: E402  (the same threshold SQL the e
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 DISCRETE_LEVELS = 20  # at most this many distinct levels: calibrate per level (evaluate.py), else in bins
-LEVEL_DIGITS = 4      # levels are counted at this precision, which bounds the rows read for continuous scores
+LEVEL_DIGITS = 4      # levels are counted, and the review queue compares (extract.sql), at this precision
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -136,7 +136,7 @@ def main(argv=None) -> None:
     threshold = field_threshold({"review_threshold": floor, "review_cutoffs": cutoffs}, column="doc_type")
     top = run(
         f"SELECT doc_type, regexp_replace(field, '\\\\[[0-9]+\\\\]', '[]') AS field, count(*) AS n, "
-        f"count_if(confidence < {threshold}) AS low_confidence, "
+        f"count_if(round(confidence, {LEVEL_DIGITS}) < {threshold}) AS low_confidence, "
         f"count_if(confidence IS NULL AND value IS NOT NULL) AS unscored "
         f"FROM {fields} GROUP BY 1, 2 HAVING low_confidence + unscored > 0 "
         f"ORDER BY low_confidence + unscored DESC LIMIT {int(args.top)}"

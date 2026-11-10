@@ -24,7 +24,7 @@ All typed tables have Change Data Feed on, so downstream jobs, or an AI Search i
 | `unscored` | A value that came back without a confidence score, and no review decision. A field the document lacks (`value` is NULL) isn't listed |
 | `unclassified` | A segment labeled `other`, or with no label |
 | `low_class_confidence` | A segment whose classification confidence is below `review_threshold` |
-| `unscored_class` | A classified segment (layouts `one_per_file` and `packet`) without a classification confidence |
+| `unscored_class` | A document with classified segments (layouts `one_per_file` and `packet`) that came back without a classification confidence: one row per document, and `value` gives the count |
 | `extract_error` | `ai_extract` failed on a segment; `value` holds the error |
 | `parse_failed` | The document didn't parse; `value` holds the reason |
 | `low_parse_confidence` | Only with `parse_cutoffs` (module 05): a page with a text element below its type's cutoff, or without a confidence; `value` names the page and element types |

@@ -134,8 +134,14 @@ def test_field_threshold_raises_the_floor_per_type_only():
 def test_review_queues_take_unscored_values_and_the_per_type_threshold():
     sections = extract.load_sections(SCRIPTS / "extract.sql")
     for name in ("create_review_view", "merge_candidates"):
-        assert "f.confidence < {{field_threshold}} OR (f.confidence IS NULL AND f.value IS NOT NULL)" in sections[name]
-    assert "'unscored'" in sections["create_review_view"] and "{{classified}}" in sections["create_review_view"]
+        # rounded like confidence_profile.py's levels, so what the profile shows is what gets queued
+        assert ("round(f.confidence, 4) < {{field_threshold}} OR (f.confidence IS NULL AND f.value IS NOT NULL)"
+                in sections[name])
+    assert profile.LEVEL_DIGITS == 4
+    view = sections["create_review_view"]
+    assert "'unscored'" in view and "{{classified}}" in view
+    unscored_class = view[view.index("'unscored_class'"):]
+    assert unscored_class.split("UNION ALL")[0].rstrip().endswith("GROUP BY path")  # one row per document
     args = argparse.Namespace(catalog="main", schema="loans", prefix="loan_docs")
     assert extract.build_params(args, STATE)["classified"] == "true"
     single = {**STATE, "layout": "single_type", "document_types": {"paystub": STATE["document_types"]["paystub"]}}
