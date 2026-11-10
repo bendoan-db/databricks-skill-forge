@@ -5,7 +5,7 @@ Measure extraction quality: profile confidence across the corpus, then, with lab
 ## Inputs → outputs
 
 - **Inputs:** `<prefix>_fields` and `<prefix>_extracted` (module 03), `warehouse_id`, and labeled documents if the user has or can make them.
-- **Outputs:** a confidence profile and `review_cutoffs` in `extraction.json`; with labels, an MLflow run with per-field metrics, per-document scores, and a calibration table, plus a pass/fail result.
+- **Outputs:** a confidence profile and `review_cutoffs` in `extraction.json`, a parse quality report (and `parse_cutoffs`, if the user wants parse flags); with labels, an MLflow run with per-field metrics, per-document scores, and a calibration table, plus a pass/fail result.
 
 ## 1. Confidence profile and review cutoffs (no labels needed)
 
@@ -20,6 +20,8 @@ It reads `<prefix>_fields` through the warehouse and prints, per type: values by
 1. Show the user the profile and `review_below` per type: the threshold the queue will use, `max(review_threshold, cutoff)`. A cutoff only raises the floor, so calibration never queues fewer values than before. With `discrete: false` (more than 20 levels, common on scans), the scores spread like probabilities, and the percentile is still a fair cutoff; say so.
 2. With the user's go-ahead, record the printed `review_cutoffs` in `extraction.json`, then render and deploy (module 01, step 3). The review view and the app's queue use them from the next run. Don't recompute them on every run: a moving cutoff would move values in and out of the reviewers' queue.
 3. Recalibrate after a schema change, or when a large batch of a different kind of document arrives (for example scans after born-digital files).
+
+4. Check the parse: `uv run <skill>/scripts/parse_quality.py --state <workdir>/extraction.json` prints the element confidence profile per text-bearing type and the pages with the most elements below their type's 5th-percentile level. Show the worst pages next to their low-confidence values: a value read from a garbled page is a parse problem, not a schema one. To list such pages in `<prefix>_review` too (reason `low_parse_confidence`), record its `parse_cutoffs` in `extraction.json` with the user's go-ahead, then render and deploy. Leave them out on born-digital files, where every type sits near 1.0 and the flags are tiny gaps.
 
 Confidence tells you where the model was unsure, not whether it was right. Treat the profile as triage, not as a quality measure; step 3's calibration shows whether it tracks correctness.
 

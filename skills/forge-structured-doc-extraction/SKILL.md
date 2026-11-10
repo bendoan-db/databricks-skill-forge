@@ -57,6 +57,7 @@ Collect these together in one question during module 00. `volume_path` is requir
 | `provided_schema` | none: module 03 builds the schema with the user | A schema the user already has, in any format, saved in `<workdir>`; module 03 converts it |
 | `split_pages` | off | Each folder holds the single-page files of one document |
 | `review_threshold` | 0.8 | The floor: values with lower confidence go to the review queue |
+| `parse_cutoffs` | none | Per element type, from module 05's parse report. When set, poorly parsed pages appear in `<prefix>_review` |
 | `review_cutoffs` | none until module 05 | Per document type, the calibrated level that raises the floor; values below `max(review_threshold, review_cutoffs[type])` are reviewed |
 | `ground_truth` | none | JSON Lines of labeled documents, for module 05 |
 | `localize` | off | Word-level boxes for each value (module 06); runs a classic job cluster |

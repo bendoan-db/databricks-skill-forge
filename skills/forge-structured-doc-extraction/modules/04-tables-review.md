@@ -27,6 +27,7 @@ All typed tables have Change Data Feed on, so downstream jobs, or an AI Search i
 | `unscored_class` | A classified segment (layouts `one_per_file` and `packet`) without a classification confidence |
 | `extract_error` | `ai_extract` failed on a segment; `value` holds the error |
 | `parse_failed` | The document didn't parse; `value` holds the reason |
+| `low_parse_confidence` | Only with `parse_cutoffs` (module 05): a page with a text element below its type's cutoff, or without a confidence; `value` names the page and element types |
 
 ## Steps
 

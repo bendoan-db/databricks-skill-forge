@@ -13,6 +13,7 @@ shared:                                     # identical in every skill that carr
   - scripts/parse.py
   - scripts/parse.sql
   - scripts/check_base_skills.py
+  - scripts/parse_quality.py
 
 catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
   title: Document search index
@@ -73,7 +74,7 @@ modules:
 
   - id: 03-evaluate
     file: modules/03-evaluate.md
-    scripts: [scripts/evaluate.py]
+    scripts: [scripts/evaluate.py, scripts/parse_quality.py]
     base_skills:
       - name: databricks-vector-search
         version: 0.1.0
@@ -199,6 +200,16 @@ facts:
       - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
         checked: 2026-11-09                  # "contains JSON with series values, legend labels, and, where available, axis information"
       - workspace_run: 2026-11-09              # earnings deck: 18 chart figures; no chart value reached chunk_to_embed or chunk_to_retrieve until chart_insights
+  - fact: >-
+      ai_parse_document element confidence sits near 1.0 for text on born-digital files and differs by element type;
+      figures score low when they hold little text (logos), so parse flags use a 5th-percentile level per text type
+    kind: heuristic                          # earnings deck, 2026-11-09: text 0.9985-1.0, titles 1.0, logos 0.74-0.85, charts 0.92-0.98
+    used_in: [scripts/parse_quality.py, modules/03-evaluate.md]
+    evidence:
+      - repo: https://github.com/databricks-solutions/advance-document-processing
+        file: skills/analyze-extraction-confidence/SKILL.md
+        checked: 2026-10-28
+      - workspace_run: 2026-11-09
   - fact: Retrieval passes at a document hit rate of 0.9 and a page hit rate of 0.8, at k = 8
     kind: heuristic                          # initial floors; calibrate on the first certification runs (docs/unstructured-doc-extraction-design.md)
     used_in: [scripts/evaluate.py, modules/03-evaluate.md, SKILL.md, evals/scenarios.yaml]

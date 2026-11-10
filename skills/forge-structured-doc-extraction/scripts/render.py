@@ -147,6 +147,7 @@ def job_config(state: dict) -> dict:
         "extract_input": state.get("extract_input", "variant"),
         "review_threshold": state.get("review_threshold", 0.8),
         "review_cutoffs": state.get("review_cutoffs") or {},
+        "parse_cutoffs": state.get("parse_cutoffs") or {},
         "review_app": state.get("review_app") is True,
         "classify_instructions": state.get("classify_instructions", ""),
         "document_types": state.get("document_types") or {},

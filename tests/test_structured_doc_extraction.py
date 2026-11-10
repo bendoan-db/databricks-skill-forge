@@ -109,6 +109,8 @@ def test_valid_config_passes():
     ({"review_cutoffs": {"pay_stub": 0.9}}, "review_cutoffs.pay_stub: not a document type"),
     ({"review_cutoffs": {"paystub": 0}}, "review_cutoffs.paystub=0"),
     ({"review_cutoffs": [0.98]}, "review_cutoffs must be an object"),
+    ({"parse_cutoffs": {"figure": 0.9}}, "parse_cutoffs.figure: use element types"),
+    ({"parse_cutoffs": {"text": 1.5}}, "parse_cutoffs.text=1.5"),
     ({"review_app": "yes"}, "review_app"),
     # ai_extract v2.1 limits
     (with_type(schema={"kind": {"type": "enum", "labels": [f"l{i}" for i in range(501)]}}), "501 labels"),
@@ -338,6 +340,20 @@ def test_confidences_reach_array_items_and_feed_calibration():
                                               "deductions": [{"description": "Medicare", "amount": 27.32}]}}
     calibration = evaluate.evaluate([truth], {"a.pdf": [segment(response)]}, TYPES)["calibration"]
     assert sorted(b["confidence"] for b in calibration["bins"]) == ["0.5", "0.95", "0.98", "1"]
+
+
+def test_parse_review_rows_only_with_parse_cutoffs_and_the_shared_flag_rule():
+    quality = load_script(SKILL, "parse_quality")
+    args = argparse.Namespace(catalog="main", schema="loans", prefix="loan_docs")
+    assert extract.build_params(args, STATE)["parse_review"] == ""
+    params = extract.build_params(args, {**STATE, "parse_cutoffs": {"text": 0.999, "table": 0.98}})
+    assert params["parse_review"].startswith("UNION ALL\n") and "'low_parse_confidence'" in params["parse_review"]
+    assert "FROM `main`.`loans`.`loan_docs_parsed` p" in params["parse_review"]
+    assert extract.PARSE_TEXT_TYPES == quality.TEXT_TYPES
+    for cutoffs in ({}, {"text": 0.999}, {"text": 0.999, "table": 0.98, "figure": 0.5}):
+        assert extract.parse_flag_sql(cutoffs) == quality.flag_sql(cutoffs)  # what the view flags is what the report shows
+    assert extract.render(extract.load_sections(SCRIPTS / "extract.sql")["create_review_view"],
+                          {**params, "review_view": "v"}).rstrip().endswith("GROUP BY path, page_id")
 
 
 # --- confidence_profile.py -----------------------------------------------------------------------------

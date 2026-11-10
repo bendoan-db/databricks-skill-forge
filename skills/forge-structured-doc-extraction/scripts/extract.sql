@@ -465,8 +465,9 @@ DELETE FROM {{progress_table}} WHERE stage IN ('extract', 'localize');
 
 -- name: create_review_view
 -- Everything a person should check: low-confidence and unscored values without a review decision, unclassified,
--- low-confidence, or unscored segments, extraction errors, and documents that didn't parse. Recreated every run,
--- so the thresholds stay current. A NULL value is a field the document lacks, not a review item by itself.
+-- low-confidence, or unscored segments, extraction errors, documents that didn't parse, and, with parse_cutoffs
+-- (module 05), pages that parsed poorly. Recreated every run, so the thresholds stay current. A NULL value is a
+-- field the document lacks, not a review item by itself.
 CREATE OR REPLACE VIEW {{review_view}}
 COMMENT 'Review queue for forge-structured-doc-extraction: one row per item to check'
 AS
@@ -496,4 +497,5 @@ WHERE extract_error IS NOT NULL
 UNION ALL
 SELECT path, CAST(NULL AS INT), CAST(NULL AS STRING), CAST(NULL AS STRING), parse_error, CAST(NULL AS DOUBLE), 'parse_failed'
 FROM {{parsed_table}}
-WHERE parsed IS NULL;
+WHERE parsed IS NULL
+{{parse_review}};

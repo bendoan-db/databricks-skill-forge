@@ -194,6 +194,23 @@ def test_task_parameters_match_the_notebooks_flags(state_file: Path, task: str, 
     assert {a.dest for a in actions if a.required} <= set(params) | jobs_params
 
 
+def test_parse_cutoffs_are_observed_levels_per_text_type():
+    quality = load_script(SKILL, "parse_quality")
+    levels = {"text": {0.9985: 2, 0.999: 3, 1.0: 95}, "table": {0.9982: 1, 0.9985: 1, 0.9988: 1}}
+    assert quality.parse_cutoffs(levels, pct=0.05, min_elements=50) == {"text": 0.999}  # 3 tables: too few
+    assert quality.parse_cutoffs(levels, pct=0.05, min_elements=3) == {"table": 0.9982, "text": 0.999}
+    assert quality.level_cutoff({}) is None
+
+
+def test_parse_flags_leave_out_figures_and_flag_unscored_elements():
+    quality = load_script(SKILL, "parse_quality")
+    assert "figure" not in quality.TEXT_TYPES and "page_number" not in quality.TEXT_TYPES
+    flag = quality.flag_sql({"text": 0.999, "figure": 0.8})
+    assert flag.startswith("(type IN ('text', 'table',") and "confidence IS NULL OR (confidence < 1.0" in flag
+    assert "WHEN 'text' THEN 0.999" in flag and "'figure' THEN" not in flag
+    assert quality.flag_sql({}) == f"(type IN ({', '.join(repr(t) for t in quality.TEXT_TYPES)}) AND (confidence IS NULL))"
+
+
 def test_render_chart_insights_needs_descriptions_and_page_images_only_for_split_pages(state_file: Path):
     state_file.write_text(json.dumps({**STATE, "chart_insights": True, "description_element_types": ""}))
     result = render("--state", str(state_file), check=False)
