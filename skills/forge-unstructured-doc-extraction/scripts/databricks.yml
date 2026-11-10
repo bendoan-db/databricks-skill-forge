@@ -46,6 +46,9 @@ variables:
   chart_prompt:
     description: Prompt for chart reading; empty uses the script default
     default: <chart_prompt>
+  chart_source:
+    description: "'vision' to read chart crops with chart_model; 'builtin' to use the parser's chart data (no model calls)"
+    default: <chart_source>
   vs_endpoint:
     description: AI Search endpoint name
     default: <vs_endpoint>
@@ -86,7 +89,7 @@ resources:
           depends_on:
             - task_key: parse
           notebook_task:
-            notebook_path: src/prep_chunks.py  # %pip installs pillow, for chart crops
+            notebook_path: src/prep_chunks.py  # %pip installs pillow and pypdfium2, for chart crops
             base_parameters:  # full_refresh: the job parameter reaches the notebook as a widget on its own
               catalog: ${var.catalog}
               schema: ${var.schema}
@@ -95,6 +98,7 @@ resources:
               chart_insights: ${var.chart_insights}
               chart_model: ${var.chart_model}
               chart_prompt: ${var.chart_prompt}
+              chart_source: ${var.chart_source}
               sql_dir: ${workspace.file_path}/src
         - task_key: sync_index
           depends_on:

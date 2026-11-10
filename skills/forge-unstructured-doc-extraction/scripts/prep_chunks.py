@@ -9,7 +9,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -q "pillow>=10"
+# MAGIC %pip install -q "pillow>=10" "pypdfium2>=4"
 
 # COMMAND ----------
 
@@ -19,13 +19,17 @@ Second task of the index job, after parse.py. It's a Databricks notebook: it run
 task whose parameters arrive as widgets, or locally through Databricks Connect, with the same settings as
 flags:
 
-    uv run --with "databricks-connect>=17" --with pillow python prep_chunks.py --catalog main \
+    uv run --with "databricks-connect>=17" --with pillow --with pypdfium2 python prep_chunks.py --catalog main \
         --schema docs --prefix contracts
 
 The SQL lives in prep_chunks.sql. Each document is chunked once per parse: <prefix>_progress records
 the (path, parsed_at) this stage has processed, so ai_prep_search never reruns on an unchanged document,
-even one that yields no chunks. With --chart-insights true, charts are cropped from the page images and
-read by a vision model first, and each reading is appended to its figure's description before chunking.
+even one that yields no chunks. With --chart-insights true, each chart gets a reading, which is appended to
+its figure's description before chunking (ai_prep_search embeds figure descriptions, not the chart data in
+figure content). With --chart-source vision, the chart is cropped from its page image, or from the PDF page
+rendered at the parser's 200 DPI, and read by a vision model, with the page's title, units, and legend and the
+parser's chart data as context. With --chart-source builtin, the reading is the parser's chart data as a table,
+with that context: no crops and no model calls.
 """
 
 import argparse
@@ -54,9 +58,19 @@ DEFAULT_CHART_PROMPT = (
     "This image is a chart cropped from a document. Describe it so that someone who can't see it can "
     "answer questions about it. Give: the chart type and title; the axes, units, and time periods; every "
     "data point you can read, as a markdown table with exact values as printed; the main trends and any "
-    "notable changes; and any footnotes or sources. Don't guess values you can't read: say so instead."
+    "notable changes; and any footnotes or sources. Don't guess values you can't read: say so instead. "
+    "The crop often leaves out the title, units, and legend: take them from the page context below, and "
+    "don't invent them."
 )
+CHART_SOURCES = ("vision", "builtin")
 MIN_CROP_PIXELS = 32
+CROP_PAD = 20         # boxes touch their content and move 2-3 px between parses
+PARSE_DPI = 200       # bbox coords are pixels of the page rendered at 200 DPI, like the saved page images
+CONTEXT_TYPES = ("title", "section_header", "caption")
+NEARBY_TYPES = ("text", "footnote")  # legends are often parsed as footnotes beside the chart
+MAX_CONTEXT_CHARS = 80               # short text anywhere on the page: units such as "In Millions"
+ADJACENT_GAP = 150                   # nearby text within this many pixels is context ...
+MAX_ADJACENT_CHARS = 400             # ... unless it's long body text
 
 # COMMAND ----------
 
@@ -67,6 +81,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prefix", required=True, help="Table prefix: reads <prefix>_parsed, writes <prefix>_chunks")
     p.add_argument("--metadata-schema", default="", help="JSON array of field names, or ai_extract-style object")
     p.add_argument("--chart-insights", choices=["true", "false"], default="false")
+    p.add_argument("--chart-source", choices=CHART_SOURCES, default="vision",
+                   help="vision: read each chart crop with --chart-model; builtin: use the parser's chart data")
     p.add_argument("--chart-model", default="", help=f"system.ai model for chart reading (default {DEFAULT_CHART_MODEL})")
     p.add_argument("--chart-prompt", default="", help="Prompt for chart reading (default: a generic prompt)")
     p.add_argument("--full-refresh", choices=["true", "false"], default="false",
@@ -167,12 +183,13 @@ def build_params(args: argparse.Namespace, columns: dict[str, str]) -> dict[str,
         "chart_labels": sql_string(json.dumps(CHART_LABELS)),
         "chart_model": sql_string(args.chart_model or DEFAULT_CHART_MODEL),
         "chart_prompt": sql_string(args.chart_prompt or DEFAULT_CHART_PROMPT),
+        "builtin_only": "true" if args.chart_source == "builtin" else "false",
     }
 
 # COMMAND ----------
 
-def crop_box(coord: list[float] | None, size: tuple[int, int], pad: int = 8) -> tuple[int, int, int, int] | None:
-    """Pixel box for a figure's bbox coord on a page image of ``size``, padded and clamped; None if too small."""
+def crop_box(coord: list[float] | None, size: tuple[int, int], pad: int = CROP_PAD) -> tuple[int, int, int, int] | None:
+    """Pixel box for a figure's bbox coord on a 200-DPI page image of ``size``, padded and clamped; None if too small."""
     if not coord or len(coord) < 4:
         return None
     x0, x1 = sorted((float(coord[0]), float(coord[2])))
@@ -184,22 +201,96 @@ def crop_box(coord: list[float] | None, size: tuple[int, int], pad: int = 8) -> 
     return box
 
 
-def crop_figure(image_uri: str | None, coord: list[float] | None) -> bytes | None:
-    """JPEG bytes of one figure cropped from its page image, or None when it can't be cropped."""
-    if not image_uri:
-        return None
+_rendered: dict = {}  # the last PDF page rendered by this worker; a document's charts usually share pages
+
+
+def pdf_page(path: str, page_id: int):
+    """One page of a PDF in a volume, rendered at the parser's 200 DPI (pixel-aligned with its bbox coords)."""
+    import pypdfium2 as pdfium
+
+    key = (path, page_id)
+    if key not in _rendered:
+        _rendered.clear()  # a 200-DPI page is tens of MB: keep one
+        pdf = pdfium.PdfDocument(path.removeprefix("dbfs:"))
+        _rendered[key] = pdf[page_id].render(scale=PARSE_DPI / 72).to_pil()
+    return _rendered[key]
+
+
+def crop_figure(image_uri: str | None, coord: list[float] | None, path: str | None = None,
+                page_id: int | None = None) -> bytes | None:
+    """JPEG bytes of one figure cropped from its page image or, without one, from its PDF page rendered at
+    200 DPI; None when it can't be cropped (no image and not a PDF, an unreadable file, or a tiny figure)."""
     from PIL import Image
 
     try:
-        with Image.open(image_uri.removeprefix("dbfs:")) as page:
-            box = crop_box(coord, page.size)
-            if box is None:
-                return None
-            buffer = io.BytesIO()
-            page.convert("RGB").crop(box).save(buffer, format="JPEG", quality=90)
-            return buffer.getvalue()
-    except OSError:
+        if image_uri:
+            with Image.open(image_uri.removeprefix("dbfs:")) as image:
+                page = image.convert("RGB")
+        elif path and path.lower().endswith(".pdf") and page_id is not None and page_id >= 0:
+            page = pdf_page(path, page_id).convert("RGB")
+        else:
+            return None
+    except (OSError, RuntimeError, IndexError):  # unreadable image or PDF (PdfiumError is a RuntimeError), bad page
         return None
+    box = crop_box(coord, page.size)
+    if box is None:
+        return None
+    buffer = io.BytesIO()
+    page.crop(box).save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
+
+
+def _adjacent(a: list[float], b: list[float], gap: float) -> bool:
+    """Boxes overlap on one axis and are within ``gap`` pixels on the other."""
+    ax0, ax1 = sorted((a[0], a[2]))
+    ay0, ay1 = sorted((a[1], a[3]))
+    bx0, bx1 = sorted((b[0], b[2]))
+    by0, by1 = sorted((b[1], b[3]))
+    x_gap, y_gap = max(bx0 - ax1, ax0 - bx1, 0), max(by0 - ay1, ay0 - by1, 0)
+    return (ay0 < by1 and by0 < ay1 and x_gap <= gap) or (ax0 < bx1 and bx0 < ax1 and y_gap <= gap)
+
+
+def figure_context(page_elements: list[dict], figure_id: int) -> str:
+    """Text a chart crop usually lacks, from the elements on its page ({id, type, content, coord}), in reading
+    order: titles, section headers, and captions; short text anywhere on the page (units such as "In Millions");
+    and text or footnotes beside the figure (legends)."""
+    figure = next((e for e in page_elements if e.get("id") == figure_id), None)
+    if figure is None or not figure.get("coord"):
+        return ""
+    picked = []
+    for element in page_elements:
+        text = (element.get("content") or "").strip()
+        kind, coord = element.get("type"), element.get("coord")
+        if element is figure or not text or not coord or kind == "figure":
+            continue
+        if (kind in CONTEXT_TYPES or (kind == "text" and len(text) <= MAX_CONTEXT_CHARS)
+                or (kind in NEARBY_TYPES and len(text) <= MAX_ADJACENT_CHARS
+                    and _adjacent(figure["coord"], coord, ADJACENT_GAP))):
+            picked.append((min(coord[1], coord[3]), min(coord[0], coord[2]), text))
+    return "\n".join(text for *_, text in sorted(picked))
+
+
+def chart_table(content: str | None) -> str | None:
+    """The chart data ai_parse_document writes into a chart figure's content (with figure descriptions on), as a
+    markdown table; None when the content isn't chart data (a logo's text, or descriptions off)."""
+    try:
+        data = json.loads(content or "")
+    except ValueError:
+        return None
+    values = data.get("values") if isinstance(data, dict) else None
+    if not isinstance(values, dict) or not values:
+        return None
+    cell = lambda v: "" if v is None else str(v).replace("|", "\\|").replace("\n", " ")  # noqa: E731
+    if all(isinstance(v, dict) for v in values.values()):  # series -> {category: value}
+        categories = list(dict.fromkeys(c for series in values.values() for c in series))
+        rows = [[name, *(series.get(c) for c in categories)] for name, series in values.items()]
+        header = ["Series", *categories]
+    else:  # one series: {category: value}
+        header, rows = ["Category", "Value"], [[c, v] for c, v in values.items()]
+    lines = ["| " + " | ".join(cell(h) for h in header) + " |", "|" + "---|" * len(header)]
+    lines += ["| " + " | ".join(cell(v) for v in row) + " |" for row in rows]
+    notes = [f"{key}: {data[key]}" for key in ("title", "additional_info") if str(data.get(key, "None")) not in ("None", "")]
+    return "\n".join(notes + lines)
 
 
 def add_chart_insights(parsed: dict, insights: list[dict]) -> dict:
@@ -235,6 +326,12 @@ def main(argv: list[str] | None = None) -> None:
     spark = get_spark()
     if charts:
         spark.udf.register("forge_crop", crop_figure, "binary")
+        spark.udf.register("forge_chart_table", chart_table, "string")
+        spark.udf.register(
+            "forge_figure_context",
+            lambda page_json, figure_id: figure_context(json.loads(page_json or "[]"), figure_id),
+            "string",
+        )
         spark.udf.register(
             "forge_add_chart_insights",
             lambda parsed_json, insights_json: json.dumps(add_chart_insights(json.loads(parsed_json), json.loads(insights_json))),

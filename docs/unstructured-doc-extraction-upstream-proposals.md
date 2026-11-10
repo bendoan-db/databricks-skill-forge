@@ -1,6 +1,6 @@
 # Draft change proposals for databricks-agent-skills (forge-unstructured-doc-extraction)
 
-Drafts for the base-skill gaps that `skills/forge-unstructured-doc-extraction` works around (and, for proposal 2, `forge-doc-qa-agent` too), in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Proposals 1–3 moved here from `doc-qa-agent-upstream-proposals.md` when the skill was split out of `doc-qa-agent` 0.3.0; they were checked against upstream v0.2.29, and proposal 4 against v0.2.34. Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in each `ucs.yaml`.
+Drafts for the base-skill gaps that `skills/forge-unstructured-doc-extraction` works around (and, for proposal 2, `forge-doc-qa-agent` too), in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Proposals 1–3 moved here from `doc-qa-agent-upstream-proposals.md` when the skill was split out of `doc-qa-agent` 0.3.0; they were checked against upstream v0.2.29, and proposal 4 against v0.2.34. Proposal 6 was added on 2026-11-09, from a workspace run. Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in each `ucs.yaml`.
 
 The Knowledge Assistant deprecation is left out, because there's no public notice to cite yet. Gaps shared with `forge-structured-doc-extraction` (`ai_classify` version 2.1, PDFs over 500 pages) are drafted in `structured-doc-extraction-upstream-proposals.md`.
 
@@ -64,3 +64,18 @@ The Knowledge Assistant deprecation is left out, because there's no public notic
 
 **Additional context.** [Access control lists](https://docs.databricks.com/aws/en/security/auth/access-control/) (updated 2026-10-20), AI Search endpoint ACLs. The docs don't say who holds `CAN CREATE` by default, or how to check it without creating an endpoint; ask the docs owner before filing.
 
+
+---
+
+## 6. Say what figure output contains, and what `ai_prep_search` embeds from it
+
+**Problem or opportunity.** `databricks-ai-functions/references/1-task-functions.md` shows the `ai_parse_document` bbox as `{coord, page_id}` without units, and doesn't say what a chart figure's `content` holds. On a live run (an 18-page earnings deck, 2026-11-09), three things decided how to get chart values into an index, and none is in the base skill:
+- `coord` is in pixels of the page rendered at 200 DPI: a 1908 × 1080 pt page gives a 5300 × 3000 px page image, and a PDF render at 200/72 scale lines up with the boxes exactly. The docs say only that coordinates are "relative to the rendered page image outputs".
+- With figure descriptions on, a chart's `content` is JSON with its series values (the docs: "series values, legend labels, and, where available, axis information"), but with `"title": "None"`, no units, and sometimes series named "Segment 1". The title and units are separate `title` and `text` elements, and a legend can be a `footnote` beside the chart.
+- `ai_prep_search` embeds the figure's `description` (a one-line summary), not its `content`, so no chart value reached `chunk_to_embed` or `chunk_to_retrieve`.
+
+**Proposed change.** In the `ai_parse_document` section, give the bbox units (200-DPI pixels, origin top-left) and the chart `content` shape, and note that a chart's title, units, and legend are separate elements on its page. In the `ai_prep_search` section, say which figure fields reach the chunks, and how to add chart values (append them to the description before chunking).
+
+**Affected skill or area.** `databricks-ai-functions` (`references/1-task-functions.md`, `ai_parse_document` and `ai_prep_search`).
+
+**Additional context.** [ai_parse_document docs](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document) (updated 2026-10-22). The 200-DPI scale and the page-context approach first appeared in [advance-document-processing](https://github.com/databricks-solutions/advance-document-processing) (`skills/crop-parsed-elements`). Before filing, check the DPI on a DOCX or image input, and whether `ai_prep_search` embeds `content` for other element types.

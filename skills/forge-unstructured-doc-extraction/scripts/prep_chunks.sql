@@ -53,49 +53,81 @@ WHERE p.parsed IS NOT NULL
 DELETE FROM {{chart_table}} WHERE path IN (SELECT path FROM batch_paths);
 
 -- name: insert_batch_chart_insights
--- Figures that ai_parse_document described are classified as chart or not from that description; each
--- chart is cropped from its page image (forge_crop, registered by prep_chunks.py) and read by a vision
--- model. failOnError => false keeps one bad image from failing the batch.
+-- One reading per chart figure. A figure whose content holds the parser's chart data (with figure descriptions
+-- on) is a chart; with chart_source vision, other described figures are classified as chart or not from their
+-- description. Each chart gets its page context (forge_figure_context: title, units, legend), because a crop
+-- loses them and the parser's chart data has no title. builtin_only: the reading is the parser's chart data as
+-- a table (forge_chart_table), with no crop and no model call. Otherwise the chart is cropped from its page
+-- image, or from its PDF page rendered at 200 DPI (forge_crop), and read by a vision model, with the context
+-- and the parser's data as hints. failOnError => false keeps one bad image from failing the batch, and a chart
+-- that can't be cropped gets an error row instead of being skipped.
 INSERT INTO {{chart_table}} BY NAME
 WITH elements AS (
-  SELECT p.path, p.parsed_at, p.parsed, e.value AS element
+  SELECT
+    p.path,
+    p.parsed_at,
+    p.parsed,
+    e.value:id::INT AS element_id,
+    e.value:type::STRING AS type,
+    e.value:bbox[0].page_id::INT AS page_id,
+    try_variant_get(e.value, '$.bbox[0].coord', 'ARRAY<DOUBLE>') AS coord,
+    e.value:content::STRING AS content,
+    e.value:description::STRING AS description
   FROM {{parsed_table}} p, LATERAL variant_explode(p.parsed:document.elements) AS e
   WHERE p.path IN (SELECT path FROM batch_paths) AND p.parsed IS NOT NULL
 ),
-figures AS (
-  SELECT
-    path,
-    parsed_at,
-    parsed,
-    element:id::INT AS element_id,
-    element:bbox[0].page_id::INT AS page_id,
-    try_variant_get(element, '$.bbox[0].coord', 'ARRAY<DOUBLE>') AS coord,
-    element:description::STRING AS description
+page_elements AS (
+  SELECT path, page_id,
+    to_json(collect_list(named_struct('id', element_id, 'type', type, 'content', content, 'coord', coord))) AS page_json
   FROM elements
-  WHERE element:type::STRING = 'figure' AND element:description::STRING IS NOT NULL
+  GROUP BY path, page_id
+),
+figures AS (
+  SELECT f.*, forge_chart_table(f.content) AS builtin, pe.page_json
+  FROM elements f
+  JOIN page_elements pe ON pe.path = f.path AND pe.page_id <=> f.page_id
+  WHERE f.type = 'figure'
 ),
 charts AS (
   SELECT
-    path, parsed_at, element_id, page_id, coord,
+    path, parsed_at, element_id, page_id, coord, builtin,
+    forge_figure_context(page_json, element_id) AS context,
     variant_get(
       try_element_at(filter(try_cast(parsed:document.pages AS ARRAY<VARIANT>), pg -> pg:id::INT = page_id), 1),
       '$.image_uri', 'STRING'
     ) AS image_uri
   FROM figures
-  WHERE ai_classify(description, {{chart_labels}}, map('version', '2.1')):response[0].value::STRING = 'chart'
+  WHERE CASE
+    WHEN builtin IS NOT NULL THEN true
+    WHEN {{builtin_only}} OR description IS NULL THEN false
+    ELSE ai_classify(description, {{chart_labels}}, map('version', '2.1')):response[0].value::STRING = 'chart'
+  END
 ),
 cropped AS (
-  SELECT *, forge_crop(image_uri, coord) AS image FROM charts WHERE image_uri IS NOT NULL
+  SELECT *, CASE WHEN {{builtin_only}} THEN NULL ELSE forge_crop(image_uri, coord, path, page_id) END AS image
+  FROM charts
 ),
 analyzed AS (
-  SELECT *, ai_query({{chart_model}}, {{chart_prompt}}, files => image, failOnError => false) AS answer
+  SELECT *,
+    CASE WHEN NOT {{builtin_only}} AND image IS NOT NULL THEN
+      ai_query(
+        {{chart_model}},
+        concat({{chart_prompt}}, '\n\nPage context (title, units, legend):\n', coalesce(context, ''),
+               coalesce(concat('\n\nThe parser read this chart as this table, which may lack the title, units, and series names, or be wrong:\n', builtin), '')),
+        files => image,
+        failOnError => false
+      )
+    END AS answer
   FROM cropped
-  WHERE image IS NOT NULL
 )
 SELECT
   path, parsed_at, element_id, page_id,
-  answer.result AS insight,
-  answer.errorMessage AS error,
+  CASE WHEN {{builtin_only}} THEN concat_ws('\n\n', nullif(context, ''), builtin) ELSE answer.result END AS insight,
+  CASE
+    WHEN {{builtin_only}} THEN NULL
+    WHEN image IS NULL THEN 'not cropped: no page image and not a readable PDF page, or the figure is too small'
+    ELSE answer.errorMessage
+  END AS error,
   current_timestamp() AS analyzed_at
 FROM analyzed;
 

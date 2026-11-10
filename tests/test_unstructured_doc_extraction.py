@@ -52,13 +52,14 @@ def state_file(tmp_path: Path) -> Path:
 def test_every_sql_placeholder_has_a_value():
     args = argparse.Namespace(
         catalog="main", schema="docs", prefix="filings", metadata_schema=json.dumps(SCHEMA),
-        chart_model="", chart_prompt="It's a chart",
+        chart_model="", chart_prompt="It's a chart", chart_source="vision",
     )
     params = prep_chunks.build_params(args, prep_chunks.metadata_columns(args.metadata_schema))
     for sql in prep_chunks.load_sections(SCRIPTS / "prep_chunks.sql").values():
         prep_chunks.render(sql, params)  # KeyError on a placeholder build_params doesn't fill
     assert params["chart_model"] == "'system.ai.claude-sonnet-5-5'"
     assert params["chart_prompt"] == "'It\\'s a chart'"
+    assert params["builtin_only"] == "false"
 
 
 def test_metadata_schema_rules():
@@ -69,10 +70,70 @@ def test_metadata_schema_rules():
 
 
 def test_crop_box_pads_clamps_and_drops_tiny_figures():
-    assert prep_chunks.crop_box([100, 120, 300, 260], (1000, 1000)) == (92, 112, 308, 268)
-    assert prep_chunks.crop_box([990, 0, 1200, 200], (1000, 1000)) is None  # 10 px wide after clamping
-    assert prep_chunks.crop_box([300, 260, 100, 120], (1000, 1000)) == (92, 112, 308, 268)  # unordered coords
+    assert prep_chunks.crop_box([100, 120, 300, 260], (1000, 1000)) == (80, 100, 320, 280)
+    assert prep_chunks.crop_box([990, 0, 1200, 200], (1000, 1000)) is None  # 30 px wide after clamping
+    assert prep_chunks.crop_box([300, 260, 100, 120], (1000, 1000)) == (80, 100, 320, 280)  # unordered coords
     assert prep_chunks.crop_box(None, (1000, 1000)) is None
+
+
+def test_crop_figure_renders_a_pdf_page_at_the_parsers_200_dpi(tmp_path: Path):
+    pytest.importorskip("PIL")
+    pytest.importorskip("pypdfium2")
+    from pypdf import PdfWriter
+    from PIL import Image
+    import io
+
+    pdf = tmp_path / "deck.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=144, height=72)  # 2 x 1 inches: 400 x 200 px at 200 DPI
+    writer.write(pdf)
+    image = prep_chunks.crop_figure(None, [100, 50, 300, 150], f"dbfs:{pdf}", 0)
+    assert Image.open(io.BytesIO(image)).size == (240, 140)  # the box padded by 20 px on each side
+    assert prep_chunks.pdf_page(str(pdf), 0).size == (400, 200)
+    assert prep_chunks.crop_figure(None, [100, 50, 300, 150], str(pdf), 3) is None    # no such page
+    assert prep_chunks.crop_figure(None, [100, 50, 300, 150], "/Volumes/x/deck.pptx", 0) is None  # not a PDF
+
+
+# From ai_parse_document v2.0 on a quarterly earnings deck (2026-11-09): the chart's title and units are separate
+# elements, and on another page its legend is a footnote beside it, while its chart data names "Segment 1".
+PAGE_ONE = [
+    {"id": 3, "type": "title", "content": "Advertising Revenue by User Geography", "coord": [281, 123, 3191, 276]},
+    {"id": 4, "type": "figure", "content": "Meta", "coord": [4553, 144, 5030, 249]},
+    {"id": 5, "type": "text", "content": "In Millions", "coord": [281, 303, 657, 378]},
+    {"id": 6, "type": "figure", "content": '{"title": "None", "values": {"US & Canada": {"Q3\'23": 14956}}}',
+     "coord": [254, 711, 4876, 2400]},
+    {"id": 7, "type": "text", "content": "Our revenue by user geography is geographically apportioned based on our "
+     "estimation of the geographic location of our users when they perform a revenue-generating activity.",
+     "coord": [329, 2691, 4966, 2796]},
+    {"id": 8, "type": "page_number", "content": "2", "coord": [5114, 2853, 5168, 2913]},
+]
+PAGE_FOUR = [
+    {"id": 21, "type": "title", "content": "Expenses as a Percentage of Revenue", "coord": [286, 123, 3000, 276]},
+    {"id": 24, "type": "figure", "content": "{}", "coord": [281, 774, 4240, 2361]},
+    {"id": 25, "type": "footnote", "content": "General &\nAdministrative\n\nMarketing\n& Sales",
+     "coord": [4335, 1608, 4924, 2334]},
+]
+
+
+def test_figure_context_finds_the_title_units_and_adjacent_legend():
+    assert prep_chunks.figure_context(PAGE_ONE, 6) == "Advertising Revenue by User Geography\nIn Millions"
+    context = prep_chunks.figure_context(PAGE_FOUR, 24)
+    assert context.startswith("Expenses as a Percentage of Revenue\n") and "Marketing\n& Sales" in context
+    far = [{**PAGE_FOUR[2], "coord": [4600, 1608, 4924, 2334]}]  # 360 px from the chart: not its legend
+    assert prep_chunks.figure_context([PAGE_FOUR[1], *far], 24) == ""
+    assert prep_chunks.figure_context(PAGE_ONE, 99) == ""
+
+
+def test_chart_table_renders_the_parsers_chart_data():
+    multi = json.dumps({"title": "None", "values": {"US & Canada": {"Q3'23": 14956, "Q4'23": 17784},
+                                                    "Europe": {"Q3'23": 7721, "Q4'23": 9159}}, "additional_info": "None"})
+    assert prep_chunks.chart_table(multi) == (
+        "| Series | Q3'23 | Q4'23 |\n|---|---|---|\n| US & Canada | 14956 | 17784 |\n| Europe | 7721 | 9159 |")
+    single = json.dumps({"title": "Revenue", "values": {"Q3'23": 11583, "Q3'25*": None}})
+    assert prep_chunks.chart_table(single) == (
+        "title: Revenue\n| Category | Value |\n|---|---|\n| Q3'23 | 11583 |\n| Q3'25* |  |")
+    for not_chart in ("Meta", "", None, "{}", '{"values": []}', "[1, 2]"):
+        assert prep_chunks.chart_table(not_chart) is None
 
 
 def test_chart_insights_append_to_figure_descriptions_only():
@@ -133,15 +194,24 @@ def test_task_parameters_match_the_notebooks_flags(state_file: Path, task: str, 
     assert {a.dest for a in actions if a.required} <= set(params) | jobs_params
 
 
-def test_render_chart_insights_needs_page_images(state_file: Path):
-    state_file.write_text(json.dumps({**STATE, "chart_insights": True}))
+def test_render_chart_insights_needs_descriptions_and_page_images_only_for_split_pages(state_file: Path):
+    state_file.write_text(json.dumps({**STATE, "chart_insights": True, "description_element_types": ""}))
+    result = render("--state", str(state_file), check=False)
+    assert result.returncode == 1 and "description_element_types" in result.stderr
+    state_file.write_text(json.dumps({**STATE, "chart_insights": True, "split_pages": True}))
     result = render("--state", str(state_file), check=False)
     assert result.returncode == 1 and "page_images_path" in result.stderr
-    state_file.write_text(json.dumps({**STATE, "chart_insights": True, "page_images_path": "/Volumes/main/docs/img"}))
+    state_file.write_text(json.dumps({**STATE, "chart_insights": True, "chart_source": "ocr"}))
+    result = render("--state", str(state_file), check=False)
+    assert result.returncode == 1 and "chart_source" in result.stderr
+    state_file.write_text(json.dumps({**STATE, "chart_insights": True}))  # PDF pages are rendered for crops
     render("--state", str(state_file))
     variables = bundle_yaml(state_file)["variables"]
-    assert variables["chart_insights"]["default"] == "true"
+    assert variables["chart_insights"]["default"] == "true" and variables["chart_source"]["default"] == "vision"
     assert variables["chart_model"]["default"] == ""  # prep_chunks.py falls back to Claude Sonnet 5.5
+    state_file.write_text(json.dumps({**STATE, "chart_insights": True, "split_pages": True, "chart_source": "builtin"}))
+    render("--state", str(state_file))  # the parser's chart data needs no page images
+    assert bundle_yaml(state_file)["variables"]["chart_source"]["default"] == "builtin"
 
 
 def test_render_protects_hand_edits(state_file: Path):

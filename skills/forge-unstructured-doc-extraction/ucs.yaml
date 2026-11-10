@@ -1,14 +1,14 @@
 # Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
 # and scripts/check_base_skills.py reads base_skills at runtime.
 name: forge-unstructured-doc-extraction
-version: 0.1.0
+version: 0.2.0
 owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
 dbs_release: dbs-2026.10                    # Forge base release; not published yet, so `upstream` is the working pin
 upstream: databricks/databricks-agent-skills@v0.2.34   # written against this tag (2026-10-23); modules 00-02 came from doc-qa-agent 0.3.0 (v0.2.29). Not yet certified in a workspace
 upstream_min: v0.2.27                       # oldest tag with every cited base skill and reference file
 inputs:
   required: [volume_path, vs_endpoint, index_name, continuous_updates]   # module 00 step 1 asks for these first; vs_endpoint may be "create one"
-  optional: [profile, target_schema, name, metadata_schema, embedding_model, page_images, chart_insights, chart_model, split_pages, eval_set]
+  optional: [profile, target_schema, name, metadata_schema, embedding_model, page_images, chart_insights, chart_source, chart_model, split_pages, eval_set]
 shared:                                     # identical in every skill that carries them; tests/test_skills.py checks
   - scripts/parse.py
   - scripts/parse.sql
@@ -123,6 +123,16 @@ coverage_gaps:
       - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_classify
         date_modified: 2026-10-22
     stale_base_guidance: databricks-ai-functions/references/1-task-functions.md recommends v2.0
+  - capability: ai_parse_document bbox coordinates are pixels of the page at 200 DPI; chart data is in figure content
+    modules: [02-chunk-index]
+    kind: missing
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
+        date_modified: 2026-10-22                # "relative to the rendered page image outputs"; no resolution given
+      - workspace_run: 2026-11-09                # earnings deck: 1908 x 1080 pt page -> 5300 x 3000 px image; a pypdfium2 render at 200/72 aligns at offset (0, 0)
+    stale_base_guidance: >-
+      databricks-ai-functions/references/1-task-functions.md gives the bbox shape without units, and doesn't say that a
+      chart figure's content holds its data as JSON, or that ai_prep_search embeds only the figure's description
   - capability: Parsing PDFs over 500 pages with pageRange slices
     modules: [01-ingest-parse]
     kind: stale
@@ -174,6 +184,21 @@ facts:
     evidence:
       - url: https://docs.databricks.com/aws/en/ai-search/ai-search
         checked: 2026-10-15
+  - fact: ai_parse_document bbox coords are pixels of the page rendered at 200 DPI, the same as its saved page images
+    used_in: [scripts/prep_chunks.py, SKILL.md]
+    evidence:
+      - repo: https://github.com/databricks-solutions/advance-document-processing
+        file: skills/crop-parsed-elements/SKILL.md
+        checked: 2026-10-28
+      - workspace_run: 2026-11-09              # 5300 x 3000 px page image for a 1908 x 1080 pt page; pypdfium2 at 200/72 matches it pixel for pixel
+  - fact: >-
+      With figure descriptions on, a chart figure's content holds the parser's chart data as JSON (title "None", no
+      units, series sometimes "Segment 1"), and ai_prep_search embeds the figure's description but not its content
+    used_in: [scripts/prep_chunks.py, scripts/prep_chunks.sql, scripts/render.py, modules/02-chunk-index.md, SKILL.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document
+        checked: 2026-11-09                  # "contains JSON with series values, legend labels, and, where available, axis information"
+      - workspace_run: 2026-11-09              # earnings deck: 18 chart figures; no chart value reached chunk_to_embed or chunk_to_retrieve until chart_insights
   - fact: Retrieval passes at a document hit rate of 0.9 and a page hit rate of 0.8, at k = 8
     kind: heuristic                          # initial floors; calibrate on the first certification runs (docs/unstructured-doc-extraction-design.md)
     used_in: [scripts/evaluate.py, modules/03-evaluate.md, SKILL.md, evals/scenarios.yaml]

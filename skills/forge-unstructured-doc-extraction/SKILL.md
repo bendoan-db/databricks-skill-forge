@@ -1,9 +1,9 @@
 ---
 name: forge-unstructured-doc-extraction
-description: "Forge use case, normally started by the forge skill: parses the documents in a Unity Catalog volume (PDF, DOCX, PPTX, images) and serves them from an AI Search (Vector Search) index for retrieval by an agent or app, with incremental ai_parse_document parsing (including PDFs over 500 pages and scans split into one file per page), ai_prep_search chunks with document-level metadata filters, optional chart readings by a vision model, optional refresh on file arrival, and a retrieval evaluation (document and page hit rates) in MLflow. Use when forge hands off to it, when forge-doc-qa-agent needs an index, or when the user names this skill."
+description: "Forge use case, normally started by the forge skill: parses the documents in a Unity Catalog volume (PDF, DOCX, PPTX, images) and serves them from an AI Search (Vector Search) index for retrieval by an agent or app, with incremental ai_parse_document parsing (including PDFs over 500 pages and scans split into one file per page), ai_prep_search chunks with document-level metadata filters, optional chart readings (by a vision model, or from the parser's chart data) with each chart's title, units, and legend, optional refresh on file arrival, and a retrieval evaluation (document and page hit rates) in MLflow. Use when forge hands off to it, when forge-doc-qa-agent needs an index, or when the user names this skill."
 compatibility: Requires databricks CLI (>= v1.11.0), Python 3.11+, uv, and the databricks-agent-skills base skills (>= v0.2.27) installed in the same skills directory as this skill
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   forge_kind: use-case
 ---
 
@@ -53,8 +53,9 @@ Module 00 asks for the first four before anything else, and doesn't continue unt
 | `name` | derived from the volume name | Lowercase letters, digits, hyphens, ≤40 chars; the bundle is `<name>-index`. ≤17 chars when `forge-doc-qa-agent` will reuse it |
 | `metadata_schema` | none | Document-level fields used for filtering, such as `company`, `document_type`, `fiscal_year`. See module 02 |
 | `embedding_model` | `databricks-qwen3-embedding-0-6b`, else `databricks-gte-large-en` | Resolved from the workspace |
-| `page_images` | off | Saves rendered page images; required for `chart_insights` |
-| `chart_insights` | off | Reads each chart with a vision model before chunking (module 02) |
+| `page_images` | off | Saves rendered page images. `chart_insights` crops them, or renders PDF pages when they're off; split pages need them |
+| `chart_insights` | off | Reads each chart before chunking, so its values reach the index (module 02) |
+| `chart_source` | `vision` | Only with `chart_insights`. `vision`: a vision model reads each chart crop. `builtin`: the parser's chart data, as a table; no model calls (module 02, step 3) |
 | `chart_model` | Claude Sonnet 5.5: `system.ai.claude-sonnet-5-5` | Only with `chart_insights`. Confirmed in `databricks ai-gateway list-model-services` |
 | `split_pages` | off | Each folder holds the single-page files of one document |
 | `eval_set` | synthetic | JSONL with `question` and `file_name`, plus optional `pages` (module 03) |
@@ -99,7 +100,7 @@ The working directory ends up with the state file, the eval set, and the bundle:
 | Situation | Start at |
 |---|---|
 | Change the metadata schema | 02, step 1 |
-| Turn on chart insights | 02, step 3. It needs page images from parsing (01, step 1), and already-chunked documents need a `full_refresh=true` run |
+| Turn on chart insights | 02, step 3. It needs figure descriptions from parsing (01, step 1), and already-chunked documents need a `full_refresh=true` run. PDFs don't need page images |
 | Re-run the retrieval evaluation | 03 |
 | New documents in the volume | With continuous updates, nothing to do. Without, rerun the job (module 01, step 5) after the user confirms; it bills only new or changed files |
 | Turn continuous updates on or off | Set `continuous_updates` in `doc-index.json`, then 01, steps 3–4 (render and deploy) |
@@ -111,7 +112,8 @@ The working directory ends up with the state file, the eval set, and the bundle:
 |---|---|---|
 | Separate indexes per domain | One index, with a `document_type` metadata filter | Domains need different access, or separate agents (for example claims vs. underwriting). Then run the skill once per domain, each in its own `<workdir>`, with its own volume folder, `prefix`, and `name` |
 | Metadata filters | Off unless `metadata_schema` is given | The corpus spans entities or periods users name in questions, or module 03 shows similar documents winning. Then turn them on |
-| Chart-heavy documents | The figure descriptions `ai_parse_document` writes | Questions about chart values miss in module 03 (or fail in `forge-doc-qa-agent`'s evaluation). Then turn on `chart_insights` (module 02, step 3) |
+| Chart-heavy documents | The figure descriptions `ai_parse_document` writes, which name a chart but carry none of its values | Questions about chart values miss in module 03 (or fail in `forge-doc-qa-agent`'s evaluation). Then turn on `chart_insights` (module 02, step 3) |
+| Chart source | `vision` | The charts' series are labeled in the chart itself (not "Segment 1" in the parser's data), and the corpus is large enough that one vision call per chart matters. Then try `builtin` on a sample first (module 02, step 3) |
 | Endpoint type | STANDARD (low latency, dict filters, `columns_to_sync`) | More than about 50M chunks, or latency isn't critical. Then use STORAGE_OPTIMIZED (filters become SQL strings) |
 | Update trigger | Asked in module 00: file arrival (continuous updates) or none | Large batches land on a schedule. Then keep `continuous_updates` true, set `schedule_cron` (Quartz syntax) in `doc-index.json`, and rerun `render.py` |
 | Split pages | Off | Files are single pages split upstream, one folder per document. Then set `split_pages` to `true` before the first parse |
@@ -133,4 +135,5 @@ Some base-skill guidance is out of date for this use case. In each of these case
 - **`ai_prep_search` metadata:** `databricks-ai-functions` lists only the `version` option. The `schema` option that module 02 uses is [documented](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_prep_search).
 - **Embeddings:** base-skill examples use `databricks-gte-large-en`. Prefer `databricks-qwen3-embedding-0-6b` ([docs](https://docs.databricks.com/aws/en/ai-search/create-ai-search)).
 - **Page limit:** `databricks-ai-functions` says documents are limited to 500 pages. The [docs](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document) apply the limit to the pages one call selects with `pageRange`; `parse.py` parses longer PDFs in 500-page slices and stitches them.
+- **Figure coordinates:** `databricks-ai-functions` and the [docs](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_parse_document) say bbox coordinates are pixels of the rendered page image, without a resolution. They're pixels of the page at 200 DPI, so a PDF page rendered at 200/72 scale lines up with them exactly; `prep_chunks.py` relies on this.
 - **`ai_classify` version** (chart insights only): use version 2.1, which returns `response[0].value`. `databricks-ai-functions` recommends 2.0 ([docs](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_classify)).

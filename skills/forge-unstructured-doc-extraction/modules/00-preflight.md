@@ -65,7 +65,7 @@ databricks serving-endpoints list -o json --profile <profile> \
 ```
 
 - Embeddings: prefer `databricks-qwen3-embedding-0-6b`, then `databricks-gte-large-en`. You can't change the embedding model after the index is created without rebuilding the index.
-- Chart model, only if `chart_insights` is on. **Load:** `databricks-unity-gateway` `references/querying.md` (how `system.ai` names resolve). Confirm that the default, `system.ai.claude-sonnet-5-5` (Claude Sonnet 5.5), appears in `databricks ai-gateway list-model-services --parent schemas/system.ai -o json --profile <profile>`, and leave `chart_model` unset to use it. Don't guess other names. On Azure Government, Azure China, and AWS GovCloud/DoD, `system.ai` isn't available yet. There, record the legacy endpoint `databricks-claude-sonnet-5-5` as `chart_model` if `databricks serving-endpoints list` shows it.
+- Chart model, only if `chart_insights` is on with `chart_source: vision` (the default). **Load:** `databricks-unity-gateway` `references/querying.md` (how `system.ai` names resolve). Confirm that the default, `system.ai.claude-sonnet-5-5` (Claude Sonnet 5.5), appears in `databricks ai-gateway list-model-services --parent schemas/system.ai -o json --profile <profile>`, and leave `chart_model` unset to use it. Don't guess other names. On Azure Government, Azure China, and AWS GovCloud/DoD, `system.ai` isn't available yet. There, record the legacy endpoint `databricks-claude-sonnet-5-5` as `chart_model` if `databricks serving-endpoints list` shows it.
 
 ## 6. AI Search endpoint and index
 
@@ -109,7 +109,7 @@ Check with `databricks grants get-effective schema <catalog>.<schema> --profile 
 Summarize what each step creates, then wait for an explicit yes:
 
 - **Parse and chunk:** N supported files, X MB. `ai_parse_document` and `ai_prep_search` are billed per page/token; only new or changed files are reprocessed later.
-- **Chart insights (only if on):** one `ai_classify` call per described figure and one vision-model call per chart, once per parse.
+- **Chart insights (only if on):** with `chart_source: vision`, one `ai_classify` call per described figure without chart data, and one vision-model call per chart, once per parse. With `builtin`, no model calls.
 - **AI Search:** a STANDARD endpoint is billed while it exists, even when idle. The index is billed by size.
 - **Job:** a serverless job. With continuous updates, it runs whenever files arrive; without, only when you start it.
 - **Retrieval evaluation (module 03):** one search per question, plus LLM calls to write synthetic questions if there's no eval set.
@@ -137,7 +137,7 @@ After the go-ahead, write the resolved values to `<workdir>/doc-index.json`:
 }
 ```
 
-`metadata_schema` is the proposed JSON object, or `null`; module 02 finalizes it. Add `chart_insights: true` and `chart_model` when they apply. Later modules add `description_element_types`, `page_images_path`, and `split_pages` (01), `filter_values` and `corpus_description` (02), and `eval_experiment` (03).
+`metadata_schema` is the proposed JSON object, or `null`; module 02 finalizes it. Add `chart_insights: true`, `chart_source`, and `chart_model` when they apply. Later modules add `description_element_types`, `page_images_path`, and `split_pages` (01), `filter_values` and `corpus_description` (02), and `eval_experiment` (03).
 
 ## Verify
 

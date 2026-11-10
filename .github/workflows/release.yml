@@ -16,7 +16,7 @@ permissions:
 
 env:
   PYTHONUTF8: "1"                           # the skills' text is UTF-8; Windows defaults to its code page
-  TEST_DEPS: --with pytest --with pyyaml --with pypdf --with rapidfuzz --with scipy
+  TEST_DEPS: --with pytest --with pyyaml --with pypdf --with rapidfuzz --with scipy --with pillow --with pypdfium2
 
 jobs:
   test:

@@ -11,7 +11,7 @@ Set up a bundle-managed Lakeflow job that parses every supported file in the vol
 
 1. **Choose parse options** and record them in `doc-index.json`. **Load:** `databricks-ai-functions` `references/1-task-functions.md`, the `ai_parse_document` section (options, output schema, limits).
    - `description_element_types`: `*` (the default) generates AI descriptions of figures and tables. Those descriptions flow into `chunk_to_embed` and help with chart- or table-heavy documents. Use `""` for text-only corpora to cut cost.
-   - `page_images_path`: only when `page_images` or `chart_insights` is on (chart insights crop the page images). Create the volume first with `CREATE VOLUME IF NOT EXISTS <catalog>.<schema>.<prefix>_page_images`, then record `/Volumes/<catalog>/<schema>/<prefix>_page_images`. If the volume can't be created, **load** `databricks-unity-catalog` `references/6-volumes.md`.
+   - `page_images_path`: only when `page_images` is on, or when `chart_insights` reads charts with `vision` in documents that aren't PDFs, or with `split_pages`. Charts in PDFs are cropped from their pages rendered at 200 DPI instead. Create the volume first with `CREATE VOLUME IF NOT EXISTS <catalog>.<schema>.<prefix>_page_images`, then record `/Volumes/<catalog>/<schema>/<prefix>_page_images`. If the volume can't be created, **load** `databricks-unity-catalog` `references/6-volumes.md`.
 
 2. **Finish module 02's design steps** (step 1, the metadata schema, and step 3 if chart insights are on). The chunk task runs right after parsing in the same job, so they must be final before the first run. If documents arrive as one file per page with one folder per document, set `split_pages` to `true` in `doc-index.json` now.
 
