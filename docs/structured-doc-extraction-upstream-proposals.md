@@ -2,7 +2,7 @@
 
 Drafts for the base-skill gaps that `skills/forge-structured-doc-extraction` works around (and, for proposals 1 and 3, `forge-unstructured-doc-extraction` too), in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Checked against upstream `main` on 2026-10-23 (v0.2.34). Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in each `ucs.yaml`.
 
-The Agent Bricks Information Extraction deprecation is left out: no base skill covers it, and there's no public notice to cite yet. Proposals 4 and 5 were added on 2026-11-01 for the review app (module 07), against v0.2.39.
+The Agent Bricks Information Extraction deprecation is left out: no base skill covers it, and there's no public notice to cite yet. Proposals 4 and 5 were added on 2026-11-01 for the review app (module 07), against v0.2.39. Proposal 6 was added on 2026-11-09 for review cutoffs (modules 04 and 05).
 
 ---
 
@@ -63,3 +63,15 @@ The Agent Bricks Information Extraction deprecation is left out: no base skill c
 **Affected skill or area.** `databricks-lakebase` (`references/lakehouse-sync.md`, the Lakehouse Sync section of `references/synced-tables.md`).
 
 **Additional context.** [Lakebase Change Data Feed docs](https://docs.databricks.com/aws/en/oltp/projects/lakehouse-sync) (updated 2026-06-11).
+
+---
+
+## 6. Say how to threshold `ai_extract` confidence scores
+
+**Problem or opportunity.** The `ai_extract` version 2.1 section says confidence scores are "useful for review queues and downstream filtering by confidence", and shows reading `confidence_score` as a DOUBLE. It doesn't say what the scores look like. On live output they often take a few discrete levels (such as 0.95, 0.98, and 1.0) with rare low outliers, so a fixed cutoff like 0.8 flags almost nothing. A value can also come back without a score, and a filter such as `confidence_score >= 0.8` drops it silently. The docs only promise "a float between 0 and 1" and leave the cutoff to the user ("choose a cutoff that aligns with your tolerance for risk and error").
+
+**Proposed change.** In the version 2.1 section: tell agents to look at the distribution before choosing a cutoff (distinct levels and counts), to cut at a low percentile level of the corpus per document type rather than a fixed number, to keep three states apart (scored; unscored, a value without a score, which goes to review; absent, a null value), and to calibrate against labels per observed level rather than in fixed-width bins.
+
+**Affected skill or area.** `databricks-ai-functions` (`references/1-task-functions.md`, `ai_extract` version 2.1).
+
+**Additional context.** [ai_extract docs](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_extract) (updated 2026-10-22). The levels were observed on born-digital synthetic paystubs in [advance-document-processing](https://github.com/databricks-solutions/advance-document-processing) (`skills/analyze-extraction-confidence`). Before filing, confirm the levels on a scanned corpus, and whether unscored values occur without an error.

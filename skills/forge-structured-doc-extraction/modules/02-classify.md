@@ -53,7 +53,7 @@ Module 03 adds a `schema` to each type. Classification runs in the same job task
 - **`one_per_file`:** one `ai_classify` call per document, on the parsed VARIANT, with `enableConfidenceScores`. Each document is one segment.
 - **`packet`:** one call per page, on a page-sized slice of the parsed VARIANT, into `<prefix>_pages`. Pages are then grouped into `<prefix>_segments`. A new segment starts when the type changes, and at every page of a `single` type.
 
-`class_confidence` is the classifier's confidence (for packets, the lowest across a segment's pages). Segments below `review_threshold`, and segments labeled `other`, appear in `<prefix>_review`.
+`class_confidence` is the classifier's confidence (for packets, the lowest across a segment's pages). Segments below `review_threshold`, segments labeled `other`, and classified segments that came back without a confidence (`unscored_class`) appear in `<prefix>_review`.
 
 ## Verify
 

@@ -285,6 +285,15 @@ def validate_config(config: dict) -> list[str]:
     types = config.get("document_types")
     if not isinstance(types, dict) or not types:
         return errors + ["document_types must be a non-empty object of <type>: {description, schema}"]
+    cutoffs = config.get("review_cutoffs") or {}
+    if not isinstance(cutoffs, dict):
+        errors.append("review_cutoffs must be an object of <type>: <confidence level> (module 05)")
+        cutoffs = {}
+    for doc_type, cutoff in cutoffs.items():
+        if doc_type not in types:
+            errors.append(f"review_cutoffs.{doc_type}: not a document type in document_types")
+        elif isinstance(cutoff, bool) or not isinstance(cutoff, (int, float)) or not 0 < cutoff <= 1:
+            errors.append(f"review_cutoffs.{doc_type}={cutoff!r}: use a number in (0, 1]")
     if layout == "single_type" and len(types) != 1:
         errors.append(f"layout single_type takes exactly one document type, got {sorted(types)}")
     for doc_type, spec in types.items():
@@ -440,6 +449,17 @@ def extract_options(spec: dict) -> str:
     return f"map({', '.join(options)})"
 
 
+def field_threshold(config: dict, column: str = "f.doc_type") -> str:
+    """SQL for the confidence below which a value is reviewed: review_threshold, raised per document type to the
+    calibrated level in review_cutoffs (module 05), so calibration never queues fewer values than the floor."""
+    floor = float(config.get("review_threshold", 0.8))
+    raised = {t: float(c) for t, c in (config.get("review_cutoffs") or {}).items() if float(c) > floor}
+    if not raised:
+        return repr(floor)
+    cases = " ".join(f"WHEN {sql_string(t)} THEN {c!r}" for t, c in sorted(raised.items()))
+    return f"(CASE {column} {cases} ELSE {floor!r} END)"
+
+
 def build_params(args: argparse.Namespace, config: dict) -> dict[str, str]:
     for name in (args.catalog, args.schema, args.prefix):
         if not NAME_RE.match(name):
@@ -469,6 +489,8 @@ def build_params(args: argparse.Namespace, config: dict) -> dict[str, str]:
         "single_type_literal": sql_string(next(iter(types))),
         "multi_page_types": ", ".join(multi) or "NULL",
         "review_threshold": repr(float(config.get("review_threshold", 0.8))),
+        "field_threshold": field_threshold(config),
+        "classified": "false" if config["layout"] == "single_type" else "true",  # single_type never classifies
         "document_input": input_expr(kind, scoped=False),
         "page_input": input_expr(kind, scoped=True),
         "extract_input": input_expr(kind, scoped=config["layout"] == "packet"),

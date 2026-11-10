@@ -37,6 +37,8 @@ scenarios:
       - extract_errors == 0
       - field_accuracy >= thresholds.field_accuracy
       - localization_hit_rate >= localization_hit_rate
+      - review_cutoffs recorded in extraction.json after the user approved confidence_profile.py's suggestion
+      - calibration.by == 'level' or the agent reported that the scores aren't discrete
       - review_app_resources == 0            # answered no: no app, synced table, Lakebase project, or review_sync job
 
   - id: mortgage-packets
@@ -125,7 +127,7 @@ scenarios:
       - wait for the review_sync job run
     checks:
       - modules_run == [00, 01, 02, 03, 04, 05, 07]   # module 07 follows the pipeline without being asked for again
-      - review_queue_rows == review_view_low_confidence_rows_before_decisions
+      - review_queue_rows == review_view_low_confidence_and_unscored_rows_before_decisions
       - decisions.approved == 1 and decisions.corrected == 1   # the repeated request isn't saved twice
       - corrected_typed_value == corrected_value and corrected_confidence == 1.0
       - both fields in reviewed_fields

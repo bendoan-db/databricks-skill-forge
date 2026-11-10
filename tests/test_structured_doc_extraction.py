@@ -106,6 +106,9 @@ def test_valid_config_passes():
     ({"document_types": {"paystub": {"description": "x", "schema": {"path": {"type": "string"}}}}}, "clashes"),
     ({"layout": "single_type"}, "exactly one"),
     ({"review_threshold": 1.5}, "review_threshold"),
+    ({"review_cutoffs": {"pay_stub": 0.9}}, "review_cutoffs.pay_stub: not a document type"),
+    ({"review_cutoffs": {"paystub": 0}}, "review_cutoffs.paystub=0"),
+    ({"review_cutoffs": [0.98]}, "review_cutoffs must be an object"),
     ({"review_app": "yes"}, "review_app"),
     # ai_extract v2.1 limits
     (with_type(schema={"kind": {"type": "enum", "labels": [f"l{i}" for i in range(501)]}}), "501 labels"),
@@ -117,6 +120,24 @@ def test_valid_config_passes():
 def test_invalid_configs_are_reported(change, message):
     errors = extract.validate_config({**STATE, **change})
     assert any(message in e for e in errors), errors
+
+
+def test_field_threshold_raises_the_floor_per_type_only():
+    assert extract.field_threshold(STATE) == "0.8"
+    raised = extract.field_threshold({**STATE, "review_cutoffs": {"paystub": 0.98, "bank_statement": 0.5}})
+    assert raised == "(CASE f.doc_type WHEN 'paystub' THEN 0.98 ELSE 0.8 END)"  # 0.5 is under the floor: dropped
+    assert "CASE doc_type " in extract.field_threshold({**STATE, "review_cutoffs": {"paystub": 0.98}}, "doc_type")
+
+
+def test_review_queues_take_unscored_values_and_the_per_type_threshold():
+    sections = extract.load_sections(SCRIPTS / "extract.sql")
+    for name in ("create_review_view", "merge_candidates"):
+        assert "f.confidence < {{field_threshold}} OR (f.confidence IS NULL AND f.value IS NOT NULL)" in sections[name]
+    assert "'unscored'" in sections["create_review_view"] and "{{classified}}" in sections["create_review_view"]
+    args = argparse.Namespace(catalog="main", schema="loans", prefix="loan_docs")
+    assert extract.build_params(args, STATE)["classified"] == "true"
+    single = {**STATE, "layout": "single_type", "document_types": {"paystub": STATE["document_types"]["paystub"]}}
+    assert extract.build_params(args, single)["classified"] == "false"  # single_type never scores a class
 
 
 def test_flatten_plans_columns_arrays_and_child_tables():
@@ -295,10 +316,52 @@ def test_packet_labels_match_segments_by_page_and_wrong_types_score_zero():
     assert result["metrics"]["classification_accuracy"] == 0.0 and result["metrics"]["field_accuracy"] == 0.0
 
 
-def test_calibration_and_threshold_failures():
-    calibration = evaluate.calibration([(0.3, 0.0), (0.95, 1.0), (0.85, 1.0), (0.82, 0.0)])
-    assert [b["correct_rate"] for b in calibration["bins"]] == [0.0, 0.5, 1.0] and calibration["monotonic"]
+def test_calibration_groups_discrete_scores_by_level_and_continuous_ones_by_bin():
+    levels = evaluate.calibration([(0.95, 0.0), (0.98, 1.0), (0.98, 0.0), (1.0, 1.0), (1.0, 1.0)])
+    assert levels["by"] == "level" and levels["monotonic"]
+    assert [(b["confidence"], b["values"], b["correct_rate"]) for b in levels["bins"]] == [
+        ("0.95", 1, 0.0), ("0.98", 2, 0.5), ("1", 2, 1.0)]
+    spread = [(0.3 + i * 0.03, 1.0 if i > 10 else 0.0) for i in range(evaluate.DISCRETE_LEVELS + 1)]
+    bins = evaluate.calibration(spread)
+    assert bins["by"] == "bin" and bins["bins"][0]["confidence"] == "[0.0, 0.5]"
     assert evaluate.threshold_failures({"field_accuracy": 0.85}) == ["field_accuracy=0.850 < 0.9"]
+
+
+def test_confidences_reach_array_items_and_feed_calibration():
+    pytest.importorskip("scipy")
+    response = {"employee_name": wrapped("A", 1.0),
+                "deductions": wrapped([{"description": wrapped("Medicare", 0.95), "amount": wrapped(27.32, 0.98)}]),
+                "flags": [wrapped("late", 0.5)]}
+    assert evaluate.confidences(response) == {"employee_name": 1.0, "deductions[0].description": 0.95,
+                                              "deductions[0].amount": 0.98, "flags[0]": 0.5}
+    truth = {"file_name": "a.pdf", "fields": {"employee_name": "A", "flags": ["late"],
+                                              "deductions": [{"description": "Medicare", "amount": 27.32}]}}
+    calibration = evaluate.evaluate([truth], {"a.pdf": [segment(response)]}, TYPES)["calibration"]
+    assert sorted(b["confidence"] for b in calibration["bins"]) == ["0.5", "0.95", "0.98", "1"]
+
+
+# --- confidence_profile.py -----------------------------------------------------------------------------
+
+profile = load_script(SKILL, "confidence_profile")
+
+
+def test_level_cutoff_is_an_observed_level_and_ties_stay_unflagged():
+    assert profile.level_cutoff({}) is None
+    assert profile.level_cutoff({0.95: 3, 0.98: 17, 1.0: 80}) == 0.98   # rank 5 lands in 0.98: only 0.95s flagged
+    assert profile.level_cutoff({0.95: 5, 0.98: 15, 1.0: 80}) == 0.95   # rank 5 is the last 0.95: none flagged
+    assert profile.level_cutoff({0.1: 1, 1.0: 199}, pct=0.05) == 1.0    # saturated: everything under 1.0 is flagged
+    assert profile.level_cutoff({0.9: 10, 1.0: 190}, pct=0.05) == 0.9   # 0.05 * 200 = 10 exactly, despite float noise
+
+
+def test_suggest_cutoffs_fall_back_to_the_corpus_then_the_floor():
+    levels = {"paystub": {0.95: 10, 0.98: 40, 1.0: 250}, "w2": {0.5: 5, 1.0: 20}}
+    suggested = profile.suggest_cutoffs(levels, pct=0.05, min_scored=200)
+    assert suggested["paystub"] == {"cutoff": 0.98, "source": "type", "scored": 300, "distinct_levels": 3}
+    assert suggested["w2"]["source"] == "corpus" and suggested["w2"]["cutoff"] == 0.98
+    assert profile.review_cutoffs(suggested, floor=0.8) == {"paystub": 0.98, "w2": 0.98}
+    assert profile.review_cutoffs(suggested, floor=0.99) == {}          # a cutoff only ever raises the floor
+    small = profile.suggest_cutoffs({"w2": {1.0: 20}}, min_scored=200)
+    assert small["w2"]["source"] == "floor" and small["w2"]["cutoff"] is None
 
 
 # --- localize.py ---------------------------------------------------------------------------------------
