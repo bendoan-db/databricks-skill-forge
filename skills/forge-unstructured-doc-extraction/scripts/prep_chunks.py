@@ -310,9 +310,11 @@ def get_spark():
         from pyspark.sql import SparkSession
 
         return SparkSession.builder.getOrCreate()
-    from databricks.connect import DatabricksSession
+    from databricks.connect import DatabricksEnv, DatabricksSession
 
-    return DatabricksSession.builder.serverless().getOrCreate()
+    # Run locally, the chart UDFs execute on serverless workers, which need the packages the notebook %pip installs.
+    env = DatabricksEnv().withDependencies(["pillow>=10", "pypdfium2>=4"])
+    return DatabricksSession.builder.serverless().withEnvironment(env).getOrCreate()
 
 
 def main(argv: list[str] | None = None) -> None:
