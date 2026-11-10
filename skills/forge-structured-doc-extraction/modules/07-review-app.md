@@ -6,7 +6,7 @@ Only when the user said yes to the review app in module 00 (`review_app` is `tru
 
 ## Inputs → outputs
 
-- **Inputs:** the typed tables and `<prefix>_fields` (module 03), `review_threshold`, and the users or groups who will review.
+- **Inputs:** the typed tables and `<prefix>_fields` (module 03), `review_threshold` and `review_cutoffs` (module 05), and the users or groups who will review.
 - **Outputs:**
   - `review` in `extraction.json`;
   - the review queue: `<prefix>_review_candidates` and its synced table, `<prefix>_review_queue`;
@@ -18,7 +18,7 @@ Only when the user said yes to the review app in module 00 (`review_app` is `tru
 
 ```
 <prefix>_fields ─► <prefix>_review_candidates ══ synced table (TRIGGERED, job task review_queue) ══► Postgres <schema>.<prefix>_review_queue
- (confidence < review_threshold)                                                               │ app reads
+ (below its type's threshold, or unscored)                                                     │ app reads
 reviewer ─► app ─► Postgres <prefix>_review.<prefix>_decisions ══ Lakehouse Sync ══► lb_<prefix>_decisions_history
                                                                      table update trigger ─► review_sync job
                     <prefix>_decisions ◄── extract notebook, stage decisions ──► typed tables (in place)

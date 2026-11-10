@@ -36,7 +36,8 @@ WHOLE_SCALAR_RE = re.compile(r"(?m)^(\s*[\w-]+:[ \t]*)<([a-z_]+)>[ \t]*$")
 HEADER = "# Rendered by forge-unstructured-doc-extraction render.py from doc-index.json (sha256:{digest}). Change doc-index.json and re-render."
 HEADER_RE = re.compile(r"^# Rendered by forge-unstructured-doc-extraction render\.py .*\(sha256:([0-9a-f]{12})\)")
 JOB_FILES = ["parse.py", "parse.sql", "prep_chunks.py", "prep_chunks.sql", "sync_index.py"]
-CHART_ELEMENT_TYPES = ("*", "figure")  # chart insights read the figure descriptions ai_parse_document writes
+CHART_ELEMENT_TYPES = ("*", "figure")  # chart insights read the figure descriptions and chart data ai_parse_document writes
+CHART_SOURCES = ("vision", "builtin")  # same as prep_chunks.py
 TRIGGER_BLOCK_RE = re.compile(r"(?ms)^      trigger:.*?\n.*?wait_after_last_change_seconds: \d+\n")
 TASK_NOTEBOOKS = {"parse": "src/parse.py", "chunk": "src/prep_chunks.py", "sync_index": "src/sync_index.py"}
 COPY_MARK = ("{comment} Copied from " + SKILL + " by render.py (sha256:{digest}). Edits are kept when you render "
@@ -127,10 +128,18 @@ def render_bundle(state: dict) -> str:
     element_types = state.get("description_element_types", "*")
     page_images = state.get("page_images_path", "")
     charts = state.get("chart_insights") is True
-    if charts and (not page_images or element_types not in CHART_ELEMENT_TYPES):
+    chart_source = state.get("chart_source", "vision")
+    if chart_source not in CHART_SOURCES:
+        raise SystemExit(f"chart_source={chart_source!r}: use one of {list(CHART_SOURCES)}")
+    if charts and element_types not in CHART_ELEMENT_TYPES:
         raise SystemExit(
-            "chart_insights needs page images (page_images_path) and figure descriptions "
+            "chart_insights needs figure descriptions, which also carry the parser's chart data "
             f"(description_element_types {' or '.join(map(repr, CHART_ELEMENT_TYPES))})"
+        )
+    if charts and chart_source == "vision" and not page_images and state.get("split_pages") is True:
+        raise SystemExit(
+            "chart_insights with chart_source vision needs page images (page_images_path) when split_pages is on: "
+            "charts are cropped from the page image, or from the PDF page, and split pages have no one PDF"
         )
     values = {
         "bundle_name": f"{state['name']}-index",
@@ -147,6 +156,7 @@ def render_bundle(state: dict) -> str:
         "chart_insights": "true" if charts else "false",
         "chart_model": state.get("chart_model") or "",  # empty: prep_chunks.py's default, Claude Sonnet 5.5
         "chart_prompt": state.get("chart_prompt") or "",
+        "chart_source": chart_source,
         "vs_endpoint": state["vs_endpoint"],
         "embedding_model": state["embedding_model"],
         "profile": state["profile"],

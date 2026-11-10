@@ -1,7 +1,7 @@
 # Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
 # and scripts/check_base_skills.py reads base_skills at runtime.
 name: forge-structured-doc-extraction
-version: 0.3.0
+version: 0.4.0
 owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
 dbs_release: dbs-2026.10                    # Forge base release; not published yet, so `upstream` is the working pin
 upstream: databricks/databricks-agent-skills@v0.2.34   # written against this tag (2026-10-23); not yet certified in a workspace
@@ -9,11 +9,12 @@ upstream_min: v0.2.27                       # oldest tag with every cited base s
 inputs:
   required: [volume_path, review_app]       # review_app: module 00 always asks; there's no default
   optional: [profile, target_schema, name, layout, document_types, provided_schema, split_pages, review_threshold,
-             ground_truth, localize]
+             review_cutoffs, parse_cutoffs, ground_truth, localize]
 shared:                                     # identical in every skill that carries them; tests/test_shared_parse.py checks
   - scripts/parse.py
   - scripts/parse.sql
   - scripts/check_base_skills.py
+  - scripts/parse_quality.py
 
 catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
   title: Structured extraction
@@ -81,7 +82,7 @@ modules:
 
   - id: 05-evaluate
     file: modules/05-evaluate.md
-    scripts: [scripts/evaluate.py]
+    scripts: [scripts/confidence_profile.py, scripts/parse_quality.py, scripts/evaluate.py]
     base_skills:
       - name: databricks-mlflow-evaluation
         version: 0.1.0
@@ -170,6 +171,17 @@ coverage_gaps:
       - url: https://docs.databricks.com/aws/en/oltp/projects/lakehouse-sync
         date_modified: 2026-06-11
     stale_base_guidance: databricks-lakebase/references/lakehouse-sync.md says tables must be in databricks_postgres, and doesn't say empty tables aren't synced
+  - capability: Thresholding ai_extract confidence (discrete levels, unscored values)
+    modules: [04-tables-review, 05-evaluate]
+    kind: missing
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_extract
+        date_modified: 2026-10-22
+      - repo: https://github.com/databricks-solutions/advance-document-processing
+        file: skills/analyze-extraction-confidence/SKILL.md   # observed on live v2.1 output, 2026-10-28
+    stale_base_guidance: >-
+      databricks-ai-functions/references/1-task-functions.md suggests filtering by confidence, without saying that the
+      scores come in a few levels, or that a value can come back without one
   - capability: Agent Bricks Information Extraction
     modules: [03-extract, 05-evaluate]
     kind: deprecated
@@ -225,6 +237,30 @@ facts:
   - fact: A table update trigger's wait_after_last_change_seconds must be over 60
     used_in: [scripts/databricks.yml]
     evidence: []                             # from the hil-doc-extraction source (resources/hil_review_publication.job.yml); the docs give no range. Confirm in a workspace
+  - fact: >-
+      ai_extract v2.1 confidence_score often takes a few discrete levels (such as 0.95, 0.98, 1.0) with rare low
+      outliers, so review cutoffs are the corpus's 5th-percentile level per document type, flagged strictly below
+    kind: heuristic                          # observed on born-digital paystubs; scans may spread wider, so calibration falls back to bins
+    used_in: [scripts/confidence_profile.py, scripts/evaluate.py, modules/05-evaluate.md]
+    evidence:
+      - repo: https://github.com/databricks-solutions/advance-document-processing
+        file: skills/analyze-extraction-confidence/SKILL.md
+        checked: 2026-10-28
+  - fact: An ai_extract v2.1 value can come back without a confidence_score, and a field the document lacks has a null value
+    used_in: [scripts/extract.sql, modules/04-tables-review.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_extract
+        checked: 2026-11-09                  # the docs define a null value; unscored values are from the advance-document-processing recipe
+  - fact: >-
+      ai_parse_document element confidence sits near 1.0 for text on born-digital files and differs by element type;
+      figures score low when they hold little text (logos), so parse flags use a 5th-percentile level per text type
+    kind: heuristic                          # earnings deck, 2026-11-09: text 0.9985-1.0, titles 1.0, logos 0.74-0.85, charts 0.92-0.98
+    used_in: [scripts/parse_quality.py, modules/05-evaluate.md]
+    evidence:
+      - repo: https://github.com/databricks-solutions/advance-document-processing
+        file: skills/analyze-extraction-confidence/SKILL.md
+        checked: 2026-10-28
+      - workspace_run: 2026-11-09
   - fact: Localization passes at a hit rate of 0.8
     kind: heuristic                          # the advance-document-processing word-level design expects ~80% with OCR alone
     used_in: [scripts/localize.py, modules/06-localize.md, SKILL.md, evals/scenarios.yaml]

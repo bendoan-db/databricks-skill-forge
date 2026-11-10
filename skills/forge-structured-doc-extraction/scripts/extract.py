@@ -70,6 +70,7 @@ MAX_DEPTH = 12  # levels of nesting, counted as the names in a field's path: gro
 MAX_ENUM_LABELS = 500
 MAX_INSTRUCTIONS = 20_000  # options.instructions must be shorter
 CHROME = "('page_header', 'page_footer', 'page_number')"
+PARSE_TEXT_TYPES = ("text", "table", "title", "section_header", "caption", "footnote", "list")  # as parse_quality.py
 STAGES = ("extract", "decisions")
 # Columns of the review app's Postgres decisions table (review-app/review-routes.ts creates it). merge_decisions reads
 # them from its Lakehouse Sync history table, so the app and this script must agree; tests check both.
@@ -285,6 +286,24 @@ def validate_config(config: dict) -> list[str]:
     types = config.get("document_types")
     if not isinstance(types, dict) or not types:
         return errors + ["document_types must be a non-empty object of <type>: {description, schema}"]
+    cutoffs = config.get("review_cutoffs") or {}
+    if not isinstance(cutoffs, dict):
+        errors.append("review_cutoffs must be an object of <type>: <confidence level> (module 05)")
+        cutoffs = {}
+    for doc_type, cutoff in cutoffs.items():
+        if doc_type not in types:
+            errors.append(f"review_cutoffs.{doc_type}: not a document type in document_types")
+        elif isinstance(cutoff, bool) or not isinstance(cutoff, (int, float)) or not 0 < cutoff <= 1:
+            errors.append(f"review_cutoffs.{doc_type}={cutoff!r}: use a number in (0, 1]")
+    parse_cutoffs = config.get("parse_cutoffs") or {}
+    if not isinstance(parse_cutoffs, dict):
+        errors.append("parse_cutoffs must be an object of <element type>: <confidence level> (module 05)")
+        parse_cutoffs = {}
+    for kind, cutoff in parse_cutoffs.items():
+        if kind not in PARSE_TEXT_TYPES:
+            errors.append(f"parse_cutoffs.{kind}: use element types from {list(PARSE_TEXT_TYPES)}")
+        elif isinstance(cutoff, bool) or not isinstance(cutoff, (int, float)) or not 0 < cutoff <= 1:
+            errors.append(f"parse_cutoffs.{kind}={cutoff!r}: use a number in (0, 1]")
     if layout == "single_type" and len(types) != 1:
         errors.append(f"layout single_type takes exactly one document type, got {sorted(types)}")
     for doc_type, spec in types.items():
@@ -440,6 +459,47 @@ def extract_options(spec: dict) -> str:
     return f"map({', '.join(options)})"
 
 
+def field_threshold(config: dict, column: str = "f.doc_type") -> str:
+    """SQL for the confidence below which a value is reviewed: review_threshold, raised per document type to the
+    calibrated level in review_cutoffs (module 05), so calibration never queues fewer values than the floor."""
+    floor = float(config.get("review_threshold", 0.8))
+    raised = {t: float(c) for t, c in (config.get("review_cutoffs") or {}).items() if float(c) > floor}
+    if not raised:
+        return repr(floor)
+    cases = " ".join(f"WHEN {sql_string(t)} THEN {c!r}" for t, c in sorted(raised.items()))
+    return f"(CASE {column} {cases} ELSE {floor!r} END)"
+
+
+def parse_flag_sql(cutoffs: dict[str, float], type_col: str = "type", conf_col: str = "confidence") -> str:
+    """SQL that's true for a flagged element of a text-bearing type: no confidence, or below its type's cutoff and 1.0.
+    The same rule as scripts/parse_quality.py's flag_sql, which suggests the cutoffs (module 05)."""
+    types = ", ".join(f"'{t}'" for t in PARSE_TEXT_TYPES)
+    below = " ".join(f"WHEN '{t}' THEN {c!r}" for t, c in sorted(cutoffs.items()) if t in PARSE_TEXT_TYPES)
+    scored = f" OR ({conf_col} < 1.0 AND {conf_col} < CASE {type_col} {below} END)" if below else ""
+    return f"({type_col} IN ({types}) AND ({conf_col} IS NULL{scored}))"
+
+
+def parse_review_sql(config: dict, parsed_table: str) -> str:
+    """The review view's low_parse_confidence rows, one per page with a flagged element; empty without parse_cutoffs."""
+    cutoffs = config.get("parse_cutoffs") or {}
+    if not cutoffs:
+        return ""
+    return (
+        "UNION ALL\n"
+        "SELECT path, CAST(NULL AS INT), CAST(NULL AS STRING), CAST(NULL AS STRING),\n"
+        "  concat('page ', CAST(page_id + 1 AS STRING), ': ', array_join(array_sort(collect_set(type)), ', ')), min(confidence),\n"
+        "  'low_parse_confidence'\n"
+        "FROM (\n"
+        "  SELECT p.path, e.value:type::STRING AS type, e.value:bbox[0].page_id::INT AS page_id,\n"
+        "    e.value:confidence::DOUBLE AS confidence\n"
+        f"  FROM {parsed_table} p, LATERAL variant_explode(p.parsed:document.elements) AS e\n"
+        "  WHERE p.parsed IS NOT NULL\n"
+        ")\n"
+        f"WHERE {parse_flag_sql(cutoffs)}\n"
+        "GROUP BY path, page_id"
+    )
+
+
 def build_params(args: argparse.Namespace, config: dict) -> dict[str, str]:
     for name in (args.catalog, args.schema, args.prefix):
         if not NAME_RE.match(name):
@@ -469,6 +529,9 @@ def build_params(args: argparse.Namespace, config: dict) -> dict[str, str]:
         "single_type_literal": sql_string(next(iter(types))),
         "multi_page_types": ", ".join(multi) or "NULL",
         "review_threshold": repr(float(config.get("review_threshold", 0.8))),
+        "field_threshold": field_threshold(config),
+        "parse_review": parse_review_sql(config, table("parsed")),
+        "classified": "false" if config["layout"] == "single_type" else "true",  # single_type never classifies
         "document_input": input_expr(kind, scoped=False),
         "page_input": input_expr(kind, scoped=True),
         "extract_input": input_expr(kind, scoped=config["layout"] == "packet"),

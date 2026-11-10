@@ -48,12 +48,16 @@ Use STANDARD unless you hit a STORAGE_OPTIMIZED trigger from the SKILL.md decisi
 
 **Load:** `databricks-ai-functions` `references/2-ai-query.md` (multimodal `ai_query` with `files =>`). Use `system.ai.*` model names.
 
-`ai_parse_document` already describes each figure (`description_element_types`), and those descriptions reach the chunks. For decks and reports where answers live in chart values, a vision model reads each chart in full first:
-1. `ai_classify` (version 2.1) sorts each described figure into chart or other, from its description.
-2. Each chart is cropped from its page image and read by `ai_query(<chart_model>, <chart_prompt>, files => image)`.
-3. The reading is appended to the figure's description before `ai_prep_search`, so it is chunked with the page's text and cited by page. Readings are stored in `<prefix>_chart_insights`.
+`ai_parse_document` describes each figure (`description_element_types`), and `ai_prep_search` embeds those descriptions. They name a chart ("Stacked bar chart of quarterly revenue by region") but carry none of its values. The parser also writes each chart's data, as JSON, into the figure's `content`, which `ai_prep_search` doesn't embed. That data has no title or units, and may name series "Segment 1". For decks and reports where answers live in chart values, each chart gets a reading first:
 
-It needs `page_images_path` and `description_element_types` of `*` or `figure`; `render.py` checks both. `chart_model` defaults to Claude Sonnet 5.5 (`system.ai.claude-sonnet-5-5`; module 00). The default `chart_prompt` asks for the chart type, axes, every readable value as a table, and trends. For a domain, such as earnings decks, set your own `chart_prompt` in `doc-index.json`. Cost: one `ai_classify` per described figure and one vision call per chart, once per parse. Confirm before turning it on, then render again (module 01, step 3). Documents chunked before you turned it on keep their old chunks until a `full_refresh=true` run (step 4).
+1. A figure whose `content` holds chart data is a chart. With `chart_source: vision`, other described figures are sorted into chart or other by `ai_classify` (version 2.1), from their description.
+2. Each chart gets its page context: the page's title, section headers, captions, and short text (units such as "In Millions"), and text or footnotes beside it (legends).
+3. The reading:
+   - **`vision`** (the default): the chart is cropped from its page image. Without page images, a PDF's chart is cropped from its page rendered at the parser's 200 DPI, and an image file's from the file itself, when the chart's box fits inside it. `ai_query(<chart_model>, <chart_prompt>, files => image)` reads it, with the page context and the parser's chart data as hints. It can name series from the legend in the image.
+   - **`builtin`:** the parser's chart data as a table, after the page context. No crops and no model calls, but series the parser called "Segment 1" stay that way.
+4. The reading is appended to the figure's description before `ai_prep_search`, so it's chunked with the page's text and cited by page. Readings are stored in `<prefix>_chart_insights`; a chart that couldn't be cropped gets a row with an `error`.
+
+It needs `description_element_types` of `*` or `figure`; `render.py` checks it. Page images (`page_images_path`) are needed only for `vision` on DOCX and PPTX documents, or with `split_pages`, which `render.py` refuses without them. `chart_model` defaults to Claude Sonnet 5.5 (`system.ai.claude-sonnet-5-5`; module 00). The default `chart_prompt` asks for the chart type, axes, every readable value as a table, and trends, taking the title and units from the page context. For a domain, such as earnings decks, set your own `chart_prompt` in `doc-index.json`. Cost with `vision`: one `ai_classify` per described figure without chart data, and one vision call per chart, once per parse; `builtin` adds neither. To choose, run `builtin` first on a sample, and show the user a few readings next to their charts. Confirm before turning it on, then render again (module 01, step 3). Documents chunked before you turned it on keep their old chunks until a `full_refresh=true` run (step 4).
 
 ## 4. Run the job
 
@@ -100,7 +104,7 @@ databricks vector-search-indexes query-index <catalog>.<schema>.<index_name> --p
 - More than about 10% `missing_metadata` means the field descriptions need work. Fix them before module 03.
 - `filter_values` (when there's metadata) and `corpus_description` are in `doc-index.json`.
 - The test query returns relevant chunks, with `file_name` and `page_numbers` filled in. If the query itself errors, **load** `databricks-vector-search` `references/search-modes.md`.
-- With chart insights on: `SELECT count(*), count_if(error IS NOT NULL) FROM <catalog>.<schema>.<prefix>_chart_insights` shows readings and few errors, and one reading checked against its chart image gets the values right.
+- With chart insights on: `SELECT count(*), count_if(error IS NOT NULL) FROM <catalog>.<schema>.<prefix>_chart_insights` shows readings and few errors. One reading, checked against its chart image, has the right title, units, and values.
 
 ## Troubleshooting
 
@@ -113,4 +117,6 @@ For errors not listed here, **load** `databricks-vector-search` `references/trou
 | `Column not found in index` at query time | Column missing from `columns_to_sync`; recreate the index (confirm first) |
 | Sync never reaches the row count | Duplicate `chunk_id`s or NULL primary keys; check `SELECT chunk_id, count(*) ... HAVING count(*) > 1` |
 | Capacity-exhausted errors as the corpus grows | Index capacity is sized from the source table at creation; recreate the index after the bulk load |
-| Chart readings missing | No page images (`page_images_path` set after parsing means re-parsing), or figures had no description; check `<prefix>_chart_insights.error` |
+| Chart readings missing | Figures had no description (`description_element_types` of `""` means re-parsing); check `<prefix>_chart_insights.error` |
+| `not cropped` errors in `<prefix>_chart_insights` | A chart in a DOCX or PPTX parsed without page images, or in an image file whose box doesn't fit inside it (the parser may have used another scale, as for a large scan): set `page_images_path` and re-parse those documents, or use `chart_source: builtin` |
+| Readings name the wrong metric or no units | The page context missed the title: check that the chart's title is on the same page. A custom `chart_prompt` must keep asking the model to take them from the page context |

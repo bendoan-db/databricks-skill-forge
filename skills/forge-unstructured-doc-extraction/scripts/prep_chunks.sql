@@ -52,52 +52,114 @@ WHERE p.parsed IS NOT NULL
 -- name: delete_batch_chart_insights
 DELETE FROM {{chart_table}} WHERE path IN (SELECT path FROM batch_paths);
 
--- name: insert_batch_chart_insights
--- Figures that ai_parse_document described are classified as chart or not from that description; each
--- chart is cropped from its page image (forge_crop, registered by prep_chunks.py) and read by a vision
--- model. failOnError => false keeps one bad image from failing the batch.
-INSERT INTO {{chart_table}} BY NAME
+-- name: batch_figures
+-- The batch's figure elements, with the parser's chart data as a table (forge_chart_table: NULL unless the figure's
+-- content holds chart data, which ai_parse_document writes with figure descriptions on), the page context a crop
+-- loses (forge_figure_context: title, units, legend), and the page image. No AI functions: the chart statements
+-- below read this view, and each AI call sits in a projection over rows a filter already narrowed, never in a CASE,
+-- so it runs only on the rows that need it.
+CREATE OR REPLACE TEMP VIEW batch_figures AS
 WITH elements AS (
-  SELECT p.path, p.parsed_at, p.parsed, e.value AS element
+  SELECT
+    p.path,
+    p.parsed_at,
+    p.parsed,
+    e.value:id::INT AS element_id,
+    e.value:type::STRING AS type,
+    e.value:bbox[0].page_id::INT AS page_id,
+    try_variant_get(e.value, '$.bbox[0].coord', 'ARRAY<DOUBLE>') AS coord,
+    e.value:content::STRING AS content,
+    e.value:description::STRING AS description
   FROM {{parsed_table}} p, LATERAL variant_explode(p.parsed:document.elements) AS e
   WHERE p.path IN (SELECT path FROM batch_paths) AND p.parsed IS NOT NULL
 ),
-figures AS (
-  SELECT
-    path,
-    parsed_at,
-    parsed,
-    element:id::INT AS element_id,
-    element:bbox[0].page_id::INT AS page_id,
-    try_variant_get(element, '$.bbox[0].coord', 'ARRAY<DOUBLE>') AS coord,
-    element:description::STRING AS description
+page_elements AS (
+  SELECT path, page_id,
+    to_json(collect_list(named_struct('id', element_id, 'type', type, 'content', content, 'coord', coord))) AS page_json
   FROM elements
-  WHERE element:type::STRING = 'figure' AND element:description::STRING IS NOT NULL
+  GROUP BY path, page_id
+)
+SELECT
+  f.path, f.parsed_at, f.element_id, f.page_id, f.coord, f.description,
+  forge_chart_table(f.content) AS builtin,
+  forge_figure_context(pe.page_json, f.element_id) AS context,
+  variant_get(
+    try_element_at(filter(try_cast(f.parsed:document.pages AS ARRAY<VARIANT>), pg -> pg:id::INT = f.page_id), 1),
+    '$.image_uri', 'STRING'
+  ) AS image_uri
+FROM elements f
+JOIN page_elements pe ON pe.path = f.path AND pe.page_id <=> f.page_id
+WHERE f.type = 'figure';
+
+-- name: insert_batch_builtin_insights
+-- chart_source builtin: one reading per figure with the parser's chart data, as its page context and the data as a
+-- table. No crops and no model calls.
+INSERT INTO {{chart_table}} BY NAME
+SELECT path, parsed_at, element_id, page_id, concat_ws('\n\n', nullif(context, ''), builtin) AS insight,
+  CAST(NULL AS STRING) AS error, current_timestamp() AS analyzed_at
+FROM batch_figures
+WHERE builtin IS NOT NULL;
+
+-- name: insert_batch_chart_insights
+-- chart_source vision: a figure with the parser's chart data is a chart; other described figures are classified
+-- from their description, with ai_classify only on those. Each chart is cropped from its page image, its PDF page
+-- rendered at 200 DPI, or its source image file (forge_crop), and read by the vision model, with the page context and the parser's
+-- data as hints. failOnError => false keeps one bad image from failing the batch; when the model fails, the reading
+-- falls back to the parser's data. Charts that can't be cropped are recorded by insert_batch_uncropped_charts.
+INSERT INTO {{chart_table}} BY NAME
+WITH to_classify AS (
+  SELECT * FROM batch_figures WHERE builtin IS NULL AND description IS NOT NULL
+),
+classified AS (
+  SELECT *, ai_classify(description, {{chart_labels}}, map('version', '2.1')):response[0].value::STRING AS label
+  FROM to_classify
 ),
 charts AS (
-  SELECT
-    path, parsed_at, element_id, page_id, coord,
-    variant_get(
-      try_element_at(filter(try_cast(parsed:document.pages AS ARRAY<VARIANT>), pg -> pg:id::INT = page_id), 1),
-      '$.image_uri', 'STRING'
-    ) AS image_uri
-  FROM figures
-  WHERE ai_classify(description, {{chart_labels}}, map('version', '2.1')):response[0].value::STRING = 'chart'
+  SELECT path, parsed_at, element_id, page_id, coord, builtin, context, image_uri FROM batch_figures
+  WHERE builtin IS NOT NULL
+  UNION ALL
+  SELECT path, parsed_at, element_id, page_id, coord, builtin, context, image_uri FROM classified
+  WHERE label = 'chart'
 ),
 cropped AS (
-  SELECT *, forge_crop(image_uri, coord) AS image FROM charts WHERE image_uri IS NOT NULL
+  SELECT *, forge_crop(image_uri, coord, path, page_id) AS image FROM charts
+),
+to_read AS (
+  SELECT * FROM cropped WHERE image IS NOT NULL
 ),
 analyzed AS (
-  SELECT *, ai_query({{chart_model}}, {{chart_prompt}}, files => image, failOnError => false) AS answer
-  FROM cropped
-  WHERE image IS NOT NULL
+  SELECT *,
+    ai_query(
+      {{chart_model}},
+      concat({{chart_prompt}}, '\n\nPage context (title, units, legend):\n', coalesce(context, ''),
+             coalesce(concat('\n\nThe parser read this chart as this table, which may lack the title, units, and series names, or be wrong:\n', builtin), '')),
+      files => image,
+      failOnError => false
+    ) AS answer
+  FROM to_read
 )
 SELECT
   path, parsed_at, element_id, page_id,
-  answer.result AS insight,
+  coalesce(answer.result, nullif(concat_ws('\n\n', nullif(context, ''), builtin), '')) AS insight,
   answer.errorMessage AS error,
   current_timestamp() AS analyzed_at
 FROM analyzed;
+
+-- name: insert_batch_uncropped_charts
+-- chart_source vision, after insert_batch_chart_insights: charts with the parser's chart data that got no reading
+-- because they couldn't be cropped (a DOCX or PPTX parsed without page images, an image whose bbox doesn't fit it,
+-- or a tiny figure). They
+-- keep the parser's data as their reading, with an error saying why. A classified chart without chart data that
+-- can't be cropped isn't recorded: finding it again would mean classifying again.
+INSERT INTO {{chart_table}} BY NAME
+SELECT f.path, f.parsed_at, f.element_id, f.page_id, concat_ws('\n\n', nullif(f.context, ''), f.builtin) AS insight,
+  'not cropped: no page image and not a readable PDF page or image, or the figure is too small' AS error,
+  current_timestamp() AS analyzed_at
+FROM batch_figures f
+WHERE f.builtin IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM {{chart_table}} c WHERE c.path = f.path AND c.parsed_at = f.parsed_at AND c.element_id <=> f.element_id
+  );
 
 -- name: batch_documents
 CREATE OR REPLACE TEMP VIEW batch_documents AS

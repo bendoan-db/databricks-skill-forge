@@ -130,7 +130,7 @@ After the go-ahead, write the resolved values to `<workdir>/extraction.json`:
 }
 ```
 
-With the review app, also write `"review": {"app_name": "<name>-review", "reviewers": ["<user or group>"]}`. Later modules add `description_element_types` and `page_images_path` (01), `classify_instructions` and `document_types` (02–03), `experiment` (05), `ocr_cluster` (06), and `review` (07).
+With the review app, also write `"review": {"app_name": "<name>-review", "reviewers": ["<user or group>"]}`. Later modules add `description_element_types` and `page_images_path` (01), `classify_instructions` and `document_types` (02–03), `review_cutoffs` and `experiment` (05), `ocr_cluster` (06), and `review` (07).
 
 ## Verify
 

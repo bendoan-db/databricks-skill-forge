@@ -69,9 +69,26 @@ scenarios:
       chart_insights: true
     eval_set: synthetic                      # module 03 synthesis, plus 5 hand-written questions about values only in charts, labeled with their pages
     checks:
-      - chart_insights.count > 0 and chart_insights.errors == 0
+      - chart_insights.count == 18 and chart_insights.errors == 0   # the 18 chart figures; the logo figures aren't charts
       - chart_value_questions_page_hit >= 4/5
+      - the page-2 reading names "Advertising Revenue by User Geography" and "In Millions"   # from the page context
       - job.trigger is null and job.schedule is null
+
+  - id: chart-heavy-deck-builtin
+    description: The same deck without page images or model calls; chart values come from the parser's chart data
+    source:
+      repo: https://github.com/databricks-solutions/advance-document-processing
+      documents: document-embedding-chart-analysis/sample_data
+    inputs:
+      continuous_updates: false
+      page_images: false
+      chart_insights: true
+      chart_source: builtin
+    eval_set: synthetic                      # same questions as chart-heavy-deck
+    checks:
+      - chart_insights.count == 18 and chart_insights.errors == 0
+      - chart_value_questions_page_hit >= 4/5
+      - no ai_query or ai_classify call in the chunk task's query history
 
   - id: incremental-refresh
     description: The file-arrival job picks up an added file and drops a deleted one without reparsing others

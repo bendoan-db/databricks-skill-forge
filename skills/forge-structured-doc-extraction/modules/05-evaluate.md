@@ -5,20 +5,25 @@ Measure extraction quality: profile confidence across the corpus, then, with lab
 ## Inputs → outputs
 
 - **Inputs:** `<prefix>_fields` and `<prefix>_extracted` (module 03), `warehouse_id`, and labeled documents if the user has or can make them.
-- **Outputs:** a confidence profile and, with labels, an MLflow run with per-field metrics, per-document scores, and a calibration table, plus a pass/fail result.
+- **Outputs:** a confidence profile and `review_cutoffs` in `extraction.json`, a parse quality report (and `parse_cutoffs`, if the user wants parse flags); with labels, an MLflow run with per-field metrics, per-document scores, and a calibration table, plus a pass/fail result.
 
-## 1. Confidence profile (no labels needed)
+## 1. Confidence profile and review cutoffs (no labels needed)
 
-```sql
-SELECT doc_type, field, count(*) AS n,
-       round(percentile(confidence, 0.1), 2) AS p10, round(percentile(confidence, 0.5), 2) AS median,
-       count_if(confidence < <review_threshold>) AS below_threshold
-FROM <catalog>.<schema>.<prefix>_fields
-WHERE confidence IS NOT NULL AND field NOT LIKE '%[%'
-GROUP BY doc_type, field ORDER BY below_threshold DESC LIMIT 30;
+`ai_extract` scores often come in a few levels (such as 0.95, 0.98, and 1.0) with rare low outliers, so a fixed `review_threshold` can flag almost nothing. Profile the scores, then raise the threshold per document type to a level observed in this corpus:
+
+```bash
+uv run <skill>/scripts/confidence_profile.py --state <workdir>/extraction.json
 ```
 
-Confidence tells you where the model was unsure, not whether it was right. Report the profile, and treat it as triage rather than a quality measure.
+It reads `<prefix>_fields` through the warehouse and prints, per type: values by state (`scored`; `unscored`, a value without a score; `absent`, no value), the confidence levels and their counts, and a suggested cutoff: the 5th-percentile level (`--pct`), flagged strictly below. It also lists the fields with the most values to review under those cutoffs. A type with fewer than 200 scored values (`--min-scored`) gets the corpus-wide level (`cutoff_source: corpus`), and with fewer than that in the whole corpus, no cutoff (`floor`). It changes nothing.
+
+1. Show the user the profile and `review_below` per type: the threshold the queue will use, `max(review_threshold, cutoff)`. A cutoff only raises the floor, so calibration never queues fewer values than before. With `discrete: false` (more than 20 levels, common on scans), the scores spread like probabilities, and the percentile is still a fair cutoff; say so.
+2. With the user's go-ahead, record the printed `review_cutoffs` in `extraction.json`, then render and deploy (module 01, step 3). The review view and the app's queue use them from the next run. Don't recompute them on every run: a moving cutoff would move values in and out of the reviewers' queue.
+3. Recalibrate after a schema change, or when a large batch of a different kind of document arrives (for example scans after born-digital files).
+
+4. Check the parse: `uv run <skill>/scripts/parse_quality.py --state <workdir>/extraction.json` prints the element confidence profile per text-bearing type and the pages with the most elements below their type's 5th-percentile level. Show the worst pages next to their low-confidence values: a value read from a garbled page is a parse problem, not a schema one. To list such pages in `<prefix>_review` too (reason `low_parse_confidence`), record its `parse_cutoffs` in `extraction.json` with the user's go-ahead, then render and deploy. Leave them out on born-digital files, where every type sits near 1.0 and the flags are tiny gaps.
+
+Confidence tells you where the model was unsure, not whether it was right. Treat the profile as triage, not as a quality measure; step 3's calibration shows whether it tracks correctness.
 
 ## 2. Labels
 
@@ -50,7 +55,7 @@ uv run <skill>/scripts/evaluate.py --state <workdir>/extraction.json --ground-tr
 | `field_accuracy` | ≥ 0.9 | Always: the mean over all labeled scalar values |
 | `array_soft_f1` | ≥ 0.8 | Labels include arrays |
 
-The script prints the run ID, the metrics, and a calibration table (correctness rate per confidence bin), and it exits with status 1 when a threshold is missed.
+The script prints the run ID, the metrics, and a calibration table: the correctness rate per observed confidence level when there are at most 20 levels (`"by": "level"`), else per confidence bin. Array items count, matched to their labels as in the soft F1. It exits with status 1 when a threshold is missed.
 
 ## 4. Tune: change one thing at a time
 
@@ -60,13 +65,14 @@ The script prints the run ID, the metrics, and a calibration table (correctness 
 | Classification misses | `documents.json`: rows whose `doc_type` differs | Descriptions of the confused types (module 02) |
 | Array soft F1 low | Item counts, predicted vs. labeled | Describe what counts as one item, and whether to include empty or subtotal rows |
 | Long documents miss fields | Scores by document size | `"mode": "precision"` for the type |
-| High confidence but wrong | Calibration: high bins with a low correct rate | Raise `review_threshold`, so more values go to people |
+| High confidence but wrong | Calibration: a high level with a low correct rate | Raise that type's `review_cutoffs` entry above the level, so its values go to people |
+| Review queue flooded | `confidence_profile.py`: a type whose cutoff is 1.0 flags every value under 1.0 | Lower `--pct` and record the new cutoff, or leave the type out of `review_cutoffs` |
 
 Changes to schemas or descriptions need a re-extraction with `full_refresh=true` (module 03, step 4), which re-bills. Confirm first, then rerun this module.
 
 ## Verify
 
-- The confidence profile was reported.
+- The confidence profile was reported, and `review_cutoffs` in `extraction.json` match what the user approved (or the user chose `review_threshold` alone).
 - With labels: the thresholds are met, the run ID is reported, and `ground_truth.jsonl` is saved in the working directory, so later runs and the Forge certification run can reuse it.
 - If calibration isn't monotonic, you told the user that confidence alone isn't a safe filter for this corpus.
 

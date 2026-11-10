@@ -31,7 +31,8 @@ from collections import defaultdict
 from pathlib import Path
 
 THRESHOLDS = {"classification_accuracy": 0.95, "field_accuracy": 0.9, "array_soft_f1": 0.8}
-CONFIDENCE_BINS = [0.0, 0.5, 0.8, 0.9, 1.0001]
+CONFIDENCE_BINS = [0.0, 0.5, 0.8, 0.9, 1.0001]  # only when scores aren't discrete
+DISCRETE_LEVELS = 20  # at most this many distinct scores: calibrate per observed level (confidence_profile.py)
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -57,14 +58,19 @@ def strip_wrappers(node):
 
 
 def confidences(node, path="", out=None) -> dict[str, float]:
-    """confidence_score of every scalar leaf outside arrays, keyed by dotted path."""
+    """confidence_score of every scalar leaf, keyed by its path: `gross.current` or `items[2].amount`."""
     out = {} if out is None else out
     if isinstance(node, dict) and "value" in node and set(node) <= {"value", "confidence_score", "citation_ids"}:
-        if isinstance(node.get("confidence_score"), (int, float)) and not isinstance(node["value"], (dict, list)):
+        if isinstance(node["value"], (dict, list)):
+            confidences(node["value"], path, out)
+        elif isinstance(node.get("confidence_score"), (int, float)) and not isinstance(node["confidence_score"], bool):
             out[path] = float(node["confidence_score"])
     elif isinstance(node, dict):
         for key, child in node.items():
             confidences(child, f"{path}.{key}" if path else key, out)
+    elif isinstance(node, list):
+        for index, child in enumerate(node):
+            confidences(child, f"{path}[{index}]", out)
     return out
 
 
@@ -173,13 +179,20 @@ def score(spec_fields: dict, predicted: dict, expected: dict, acc: dict, judge=N
             acc["array"][here].append(s)
             if kind == "array_object":
                 for child, child_spec in spec["items"]["properties"].items():
-                    matched = [
-                        similarity(child_spec, items[i].get(child) if isinstance(items[i], dict) else None, labels[j][child])
-                        for i, j, _ in pairs
-                        if isinstance(labels[j], dict) and child in labels[j]
-                    ]
+                    matched = []
+                    for i, j, _ in pairs:
+                        if not (isinstance(labels[j], dict) and child in labels[j]):
+                            continue
+                        item_score = similarity(child_spec, items[i].get(child) if isinstance(items[i], dict) else None,
+                                                labels[j][child])
+                        matched.append(item_score)
+                        if f"{here}[{i}].{child}" in conf:
+                            acc["calibration"].append((conf[f"{here}[{i}].{child}"], item_score))
                     if matched:
                         acc["array"][f"{here}.{child}"].append(sum(matched) / len(matched))
+            else:
+                acc["calibration"] += [(conf[f"{here}[{i}]"], pair_score) for i, _, pair_score in pairs
+                                       if f"{here}[{i}]" in conf]
         else:
             s = leaf_score(spec, predicted.get(name), expected[name], judge, here)
             acc["leaf"][here].append(s)
@@ -190,14 +203,22 @@ def score(spec_fields: dict, predicted: dict, expected: dict, acc: dict, judge=N
 
 
 def calibration(pairs: list[tuple[float, float]]) -> dict:
-    """Correctness rate per confidence bin, and whether it rises with confidence."""
+    """Correctness rate per observed confidence level when the scores are discrete (ai_extract often returns a few
+    levels, so fixed bins would put them all in one), else per confidence bin; and whether it rises with confidence."""
+    levels = sorted({round(c, 4) for c, _ in pairs})
     bins = []
-    for low, high in zip(CONFIDENCE_BINS, CONFIDENCE_BINS[1:]):
-        inside = [s for c, s in pairs if low <= c < high]
-        if inside:
-            bins.append({"confidence": f"[{low:.1f}, {min(high, 1.0):.1f}]", "values": len(inside), "correct_rate": sum(inside) / len(inside)})
+    if len(levels) <= DISCRETE_LEVELS:
+        for level in levels:
+            inside = [s for c, s in pairs if round(c, 4) == level]
+            bins.append({"confidence": f"{level:g}", "values": len(inside), "correct_rate": sum(inside) / len(inside)})
+    else:
+        for low, high in zip(CONFIDENCE_BINS, CONFIDENCE_BINS[1:]):
+            inside = [s for c, s in pairs if low <= c < high]
+            if inside:
+                bins.append({"confidence": f"[{low:.1f}, {min(high, 1.0):.1f}]", "values": len(inside), "correct_rate": sum(inside) / len(inside)})
     rates = [b["correct_rate"] for b in bins]
-    return {"bins": bins, "monotonic": all(a <= b + 1e-9 for a, b in zip(rates, rates[1:]))}
+    return {"by": "level" if len(levels) <= DISCRETE_LEVELS else "bin", "bins": bins,
+            "monotonic": all(a <= b + 1e-9 for a, b in zip(rates, rates[1:]))}
 
 
 def match_segment(truth: dict, segments: list[dict]) -> dict | None:

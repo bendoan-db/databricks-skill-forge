@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS {{candidates_table}} (
   parsed_at TIMESTAMP,
   queued_at TIMESTAMP
 )
-COMMENT 'Review app queue: values below review_threshold (forge-structured-doc-extraction module 07)'
+COMMENT 'Review app queue: values below their threshold, or unscored (forge-structured-doc-extraction module 07)'
 TBLPROPERTIES (delta.enableChangeDataFeed = true);
 
 -- name: pending_documents
@@ -375,7 +375,8 @@ WHEN NOT MATCHED THEN INSERT (path, parsed_at, stage, done_at)
   VALUES (s.path, s.parsed_at, {{stage_literal}}, current_timestamp());
 
 -- name: merge_candidates
--- The review app's queue: every value below review_threshold in the current extraction, keyed so a decision
+-- The review app's queue: every value below its document type's threshold (review_threshold, or the calibrated
+-- level in review_cutoffs), and every value that came back without a score, in the current extraction, keyed so a decision
 -- stays attached to its value across re-extractions of the same parse. Unchanged rows aren't touched, so the
 -- synced table moves only what changed.
 MERGE INTO {{candidates_table}} t
@@ -399,7 +400,7 @@ USING (
   JOIN {{extracted_table}} x ON x.path = f.path AND x.segment_id = f.segment_id AND x.doc_type = f.doc_type
   LEFT JOIN field_specs spec
     ON spec.doc_type = f.doc_type AND spec.pattern = regexp_replace(f.field, '\\[[0-9]+\\]', '[]')
-  WHERE f.confidence < {{review_threshold}}
+  WHERE round(f.confidence, 4) < {{field_threshold}} OR (f.confidence IS NULL AND f.value IS NOT NULL)
 ) s
 ON t.review_id = s.review_id
 WHEN MATCHED AND NOT (t.ai_value <=> s.ai_value AND t.confidence <=> s.confidence AND t.page_numbers <=> s.page_numbers
@@ -463,15 +464,17 @@ WHERE g.stage IN ('extract', 'decisions') AND NOT EXISTS (SELECT 1 FROM {{parsed
 DELETE FROM {{progress_table}} WHERE stage IN ('extract', 'localize');
 
 -- name: create_review_view
--- Everything a person should check: low-confidence values without a review decision, unclassified or
--- low-confidence segments, extraction errors, and documents that didn't parse. Recreated every run, so the
--- threshold stays current.
+-- Everything a person should check: low-confidence and unscored values without a review decision, unclassified,
+-- low-confidence, or unscored segments, extraction errors, documents that didn't parse, and, with parse_cutoffs
+-- (module 05), pages that parsed poorly. Recreated every run, so the thresholds stay current. A NULL value is a
+-- field the document lacks, not a review item by itself.
 CREATE OR REPLACE VIEW {{review_view}}
 COMMENT 'Review queue for forge-structured-doc-extraction: one row per item to check'
 AS
-SELECT f.path, f.segment_id, f.doc_type, f.field, f.value, f.confidence, 'low_confidence' AS reason
+SELECT f.path, f.segment_id, f.doc_type, f.field, f.value, f.confidence,
+  CASE WHEN f.confidence IS NULL THEN 'unscored' ELSE 'low_confidence' END AS reason
 FROM {{fields_table}} f
-WHERE f.confidence < {{review_threshold}}
+WHERE (round(f.confidence, 4) < {{field_threshold}} OR (f.confidence IS NULL AND f.value IS NOT NULL))
   AND NOT EXISTS (
     SELECT 1 FROM {{decisions_table}} d
     WHERE d.path = f.path AND d.segment_id = f.segment_id AND d.doc_type = f.doc_type AND d.field = f.field
@@ -483,10 +486,20 @@ SELECT path, segment_id, doc_type, CAST(NULL AS STRING), CAST(NULL AS STRING), c
 FROM {{segments_table}}
 WHERE doc_type IS NULL OR doc_type = 'other' OR class_confidence < {{review_threshold}}
 UNION ALL
+-- One row per document, not per segment: when ai_classify returns no scores, it usually returns none for a whole
+-- document, and a row per segment would bury the other items.
+SELECT path, CAST(NULL AS INT), CAST(NULL AS STRING), CAST(NULL AS STRING),
+  concat(CAST(count(*) AS STRING), ' classified segments without a classification confidence'), CAST(NULL AS DOUBLE),
+  'unscored_class'
+FROM {{segments_table}}
+WHERE {{classified}} AND class_confidence IS NULL AND doc_type IS NOT NULL AND doc_type <> 'other'
+GROUP BY path
+UNION ALL
 SELECT path, segment_id, doc_type, CAST(NULL AS STRING), extract_error, CAST(NULL AS DOUBLE), 'extract_error'
 FROM {{extracted_table}}
 WHERE extract_error IS NOT NULL
 UNION ALL
 SELECT path, CAST(NULL AS INT), CAST(NULL AS STRING), CAST(NULL AS STRING), parse_error, CAST(NULL AS DOUBLE), 'parse_failed'
 FROM {{parsed_table}}
-WHERE parsed IS NULL;
+WHERE parsed IS NULL
+{{parse_review}};
