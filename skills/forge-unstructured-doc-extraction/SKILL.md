@@ -90,10 +90,19 @@ The working directory ends up with the state file, the eval set, and the bundle:
 
 ```
 <workdir>/
+├── README.md        # the project explained for whoever opens the folder; write_readme.py writes it
 ├── doc-index.json   # resolved values; render.py reads it, and so does forge-doc-qa-agent
 ├── evals.jsonl      # retrieval eval set (module 03); forge-doc-qa-agent reuses it
 └── <name>-index/    # Declarative Automation Bundle: parse → chunk → sync_index job (rendered by render.py)
 ```
+
+**The README.** Each time a module's Verify passes, module 00's included, update `<workdir>/README.md`:
+
+```bash
+uv run <skill>/scripts/write_readme.py --state <workdir>/doc-index.json
+```
+
+It explains the project to whoever opens the folder, from this skill and every Forge state file in `<workdir>`: what it builds, its settings, and each module's purpose, outputs, and status. Its Notes section is the user's, and is kept. If the script reports `kept_edited`, someone edited the README outside Notes: tell the user, and pass `--force` only if they agree. A README.md that `<workdir>` already had is left alone, and the project's goes to `FORGE-README.md`.
 
 **Resuming.** If `<workdir>/doc-index.json` exists, read it, confirm its values with the user, and rerun module 00's base-skill check (step 3). Then start at the first module missing from `completed`, or jump in here:
 
@@ -123,6 +132,7 @@ The working directory ends up with the state file, the eval set, and the bundle:
 - The index `<catalog>.<schema>.<index_name>` row count equals `<prefix>_chunks` row count.
 - Module 03 meets its thresholds: document hit rate ≥ 0.9 and page hit rate ≥ 0.8 (when questions have pages), at k = 8. Report the run URL.
 - `doc-index.json` has `filter_values` (when there's metadata) and `corpus_description`.
+- `<workdir>/README.md` describes the finished project: `write_readme.py` ran after the last module.
 - You told the user the job name and whether it runs on file arrival, the index name and its filter columns, the endpoint, and anything you skipped. If `forge-doc-qa-agent` sent you here, return to its module 00. Otherwise, if `forge` started this skill, return to it for a next step; if not, mention that `forge-doc-qa-agent` can build a cited Q&A agent on the index.
 
 ## Base-skill guidance to override

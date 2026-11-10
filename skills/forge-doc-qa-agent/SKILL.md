@@ -78,12 +78,21 @@ The working directory ends up with both skills' state files, the index's bundle,
 
 ```
 <workdir>/
+├── README.md        # the project explained for whoever opens the folder; write_readme.py writes it
 ├── doc-index.json   # the index's values (forge-unstructured-doc-extraction); read-only here
 ├── evals.jsonl      # the index's eval set; module 03 copies it into the project
 ├── <name>-index/    # forge-unstructured-doc-extraction's bundle: parse → chunk → sync_index job
-├── doc-qa.json      # this skill's values; render.py reads it
+├── doc-qa.json      # the agent's values (this skill); render.py reads it
 └── <name>/          # agentbricks init --framework langgraph project (agent.toml, agent/, runtime/, app.yaml)
 ```
+
+**The README.** Each time a module's Verify passes, module 00's included, update `<workdir>/README.md`:
+
+```bash
+uv run <skill>/scripts/write_readme.py --state <workdir>/doc-qa.json
+```
+
+It explains the project to whoever opens the folder, from this skill and every Forge state file in `<workdir>`: what it builds, its settings, and each module's purpose, outputs, and status. Its Notes section is the user's, and is kept. If the script reports `kept_edited`, someone edited the README outside Notes: tell the user, and pass `--force` only if they agree. A README.md that `<workdir>` already had is left alone, and the project's goes to `FORGE-README.md`.
 
 **Resuming.** If `<workdir>/doc-qa.json` exists, read it and `doc-index.json`, confirm their values with the user, and rerun module 00's base-skill check (step 3). Then start at the first module missing from `completed`, or jump in here:
 
@@ -109,6 +118,7 @@ The working directory ends up with both skills' state files, the index's bundle,
 
 - `agentbricks endpoint invoke` on the deployed app returns a cited answer.
 - Module 03 meets its thresholds: groundedness ≥ 0.8, relevance ≥ 0.8, and correctness ≥ 0.6 when expectations exist. Report the run URL.
+- `<workdir>/README.md` describes the finished project: `write_readme.py` ran after the last module.
 - You told the user the app URL, the index it searches, and anything you skipped. If `forge` started this skill, return to it for a next step.
 
 ## Base-skill guidance to override

@@ -98,10 +98,23 @@ def test_shared_files_are_identical():
     for skill in SKILLS:
         for name in manifest(skill).get("shared", []):
             carriers.setdefault(name, []).append(skill)
-    assert {"scripts/parse.py", "scripts/parse.sql", "scripts/check_base_skills.py"} <= set(carriers)
+    assert {"scripts/parse.py", "scripts/parse.sql", "scripts/check_base_skills.py", "scripts/write_readme.py"} <= set(carriers)
+    assert set(carriers["scripts/write_readme.py"]) == set(SKILLS), "every use-case skill writes its project's README"
     for name, skills in carriers.items():
         copies = {(SKILLS_DIR / skill / name).read_bytes() for skill in skills}
         assert len(copies) == 1, f"{name} differs between {skills}: copy one over the others"
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+def test_workflow_writes_the_project_readme(skill: str):
+    """After each module, the workflow updates <workdir>/README.md (tests/test_write_readme.py checks what it writes)."""
+    text = (SKILLS_DIR / skill / "SKILL.md").read_text()
+    workflow = text.split("\n## Workflow\n", 1)[1].split("\n## ", 1)[0]
+    state = manifest(skill)["catalog"]["state_file"]
+    assert f"uv run <skill>/scripts/write_readme.py --state <workdir>/{state}" in workflow
+    assert re.search(r"(?m)^├── README\.md +# ", workflow), "the working-directory tree lists README.md"
+    done = text.split("\n## Done when\n", 1)[1].split("\n## ", 1)[0]
+    assert "`<workdir>/README.md`" in done
 
 
 NOTEBOOK_HEADER = "# Databricks notebook source"

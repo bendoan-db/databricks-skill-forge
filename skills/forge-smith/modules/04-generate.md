@@ -20,7 +20,7 @@ It writes `<out>/<name>/` and reports how many `smith:` markers are left to fill
 - `render.py`, from `templates/render.py`: it renders the bundle and copies the job's notebooks, keeping the ones a user edited;
 - `ucs.yaml`, with the installed base-skill versions;
 - the thresholds, in `evaluate.py` and `scenarios.yaml`;
-- a copy of `check_base_skills.py`.
+- copies of `check_base_skills.py` and `write_readme.py`, and the Workflow step that runs `write_readme.py` after each module, so each project the skill builds gets a README.
 
 If it lists blueprint problems instead, fix the blueprint (modules 02 and 03), and run it again.
 
@@ -49,7 +49,7 @@ Keep each module short. Don't restate what a base skill covers: the Load line is
 
 ## 4. The rest
 
-- **SKILL.md:** the Reference architecture diagram, plus anything missing from Done when.
+- **SKILL.md:** the Reference architecture diagram, the working-directory tree (what the modules create there), and anything missing from Done when. `write_readme.py` copies these, and each module's purpose and sections, into the project's README, so write them for the person who opens the project later, too.
 - **`evals/scenarios.yaml`:** one scenario, from the source's example data or a public dataset, with values for the required inputs, its checks, and the teardown list.
 - **Other markers:** run `grep -rn "smith:" <out>/<name>` and fill in whatever it finds.
 

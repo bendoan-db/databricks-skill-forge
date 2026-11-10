@@ -8,9 +8,9 @@
 
 Checks the frontmatter, the SKILL.md sections and their order, ucs.yaml against the module text (each module's
 Load lines name exactly its base skills, and so does its Workflow row), module shape, inputs, thresholds, the shared
-check_base_skills.py, the job tasks (each one in scripts/databricks.yml is a notebook_task whose scripts/<file>.py is a
-Databricks notebook ending in the guarded run cell), leftover `smith:` markers, and the folder limits (50 entries,
-3 levels, text only, no caches).
+check_base_skills.py and write_readme.py (and the Workflow step that writes the project's README), the job tasks
+(each one in scripts/databricks.yml is a notebook_task whose scripts/<file>.py is a Databricks notebook ending in the
+guarded run cell), leftover `smith:` markers, and the folder limits (50 entries, 3 levels, text only, no caches).
 With --skills-dir, it also runs the skill's own check_base_skills.py against those base skills. The Forge repo's tests
 run this on every use-case skill, so its rules stay the same as theirs.
 """
@@ -35,6 +35,7 @@ RUN_CELL = ("# As a job's notebook task, the settings arrive as widgets; run as 
             'if __name__ == "__main__":\n'
             '    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)')
 NOTEBOOK_PATH = re.compile(r"^(?:\.\./)?src/([\w.-]+\.py)$")
+SHARED = ("scripts/check_base_skills.py", "scripts/write_readme.py")  # identical to templates/; listed under `shared`
 
 
 def frontmatter(text: str) -> dict:
@@ -51,7 +52,7 @@ def thresholds(evaluate: Path) -> dict | None:
 
 def check(folder: Path, skills_dir: Path | None = None) -> list[str]:
     problems = []
-    for rel in ("SKILL.md", "ucs.yaml", "evals/scenarios.yaml", "scripts/check_base_skills.py", "scripts/evaluate.py"):
+    for rel in ("SKILL.md", "ucs.yaml", "evals/scenarios.yaml", *SHARED, "scripts/evaluate.py"):
         if not (folder / rel).is_file():
             problems.append(f"{rel} is missing")
     if problems:
@@ -145,10 +146,16 @@ def check(folder: Path, skills_dir: Path | None = None) -> list[str]:
     # Job and training code: notebook tasks running Databricks notebooks
     problems += job_task_problems(folder)
 
-    # Shared file
-    shared = SMITH_DIR / "templates" / "check_base_skills.py"
-    if (folder / "scripts" / "check_base_skills.py").read_bytes() != shared.read_bytes():
-        problems.append(f"scripts/check_base_skills.py differs from Forge's shared copy ({shared})")
+    # Shared files, and the project README that write_readme.py writes after each module
+    for rel in SHARED:
+        shared = SMITH_DIR / "templates" / Path(rel).name
+        if (folder / rel).read_bytes() != shared.read_bytes():
+            problems.append(f"{rel} differs from Forge's shared copy ({shared})")
+        if rel not in (ucs.get("shared") or []):
+            problems.append(f"ucs.yaml shared must list {rel}")
+    readme_step = f"uv run <skill>/scripts/write_readme.py --state <workdir>/{catalog.get('state_file')}"
+    if catalog.get("state_file") and readme_step not in section(text, "Workflow"):
+        problems.append(f"SKILL.md Workflow must run `{readme_step}` after each module (anatomy.md, SKILL.md)")
 
     # Folder limits, text only, and leftover markers
     entries = list(folder.rglob("*"))

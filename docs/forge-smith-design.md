@@ -15,7 +15,7 @@ Maintainer notes for `skills/forge-smith`, the charter's "Use Case Skill Builder
 | Inventory: files, bundle jobs in task order, settings, secrets, hard-coded names, base-skill signals | `scan.py` | Exhaustive and repeatable; an agent skimming a repo misses settings |
 | Stages, module boundaries, which reference file each step needs, the metric | Agent, approved by the author (module 02) | Needs reading the code |
 | Discovery questions: classifying each setting | Agent, approved by the author (module 03), with rules | Needs knowing what's user-specific |
-| Frontmatter, `ucs.yaml`, Load lines, the Workflow table, module 00, thresholds, `check_base_skills.py` | `scaffold.py` | The values that must agree across files are written once, from one blueprint |
+| Frontmatter, `ucs.yaml`, Load lines, the Workflow table and README step, module 00, thresholds, `check_base_skills.py`, `write_readme.py` | `scaffold.py` | The values that must agree across files are written once, from one blueprint |
 | Steps, ported scripts, the diagram | Agent (module 04), at the `smith:` markers | Content |
 | Forge's rules | `check_skill.py` | Usable outside this repo, where the tests aren't |
 
@@ -23,11 +23,11 @@ Maintainer notes for `skills/forge-smith`, the charter's "Use Case Skill Builder
 
 **`check_skill.py` stays in line with the tests.** `test_check_skill_passes_every_use_case_skill` runs it on every hand-built skill. When a repo rule changes, either the hand-built skills or the checker change with it. Where the hand-built skills differ, the checker accepts what they all do. For example, `forge-structured-doc-extraction` names `volume_path` in its commands rather than in a question table, so "asked in module 00" means named there.
 
-**The shared file.** `templates/check_base_skills.py` is one more copy of the shared script. The forge-smith test fails when it drifts from the use-case skills' copies. The drift job's `sync_shared` reads `ucs.yaml` `shared` lists, so it doesn't update this copy. A drift edit to the script fails that test, and the pull request gets marked needs-owner.
+**The shared files.** `templates/check_base_skills.py` and `templates/write_readme.py` are one more copy of each shared script. The forge-smith test fails when one drifts from the use-case skills' copies. `write_readme.py` writes the README of each project a skill builds (`project-readme-design.md`). The drift job's `sync_shared` reads `ucs.yaml` `shared` lists, so it doesn't update this copy. A drift edit to the script fails that test, and the pull request gets marked needs-owner.
 
 ## Job code is notebooks
 
-Since 2026-11-01, pipeline and training code in every Forge skill is a Databricks notebook, run as a `notebook_task`, so users can open, run, and edit it in their workspace (owner direction). App code stays Python modules, the platform's practice for apps, and the agent's local tools (`render.py`, `evaluate.py`, `check_base_skills.py`) stay `uv` scripts.
+Since 2026-11-01, pipeline and training code in every Forge skill is a Databricks notebook, run as a `notebook_task`, so users can open, run, and edit it in their workspace (owner direction). App code stays Python modules, the platform's practice for apps, and the agent's local tools (`render.py`, `evaluate.py`, `check_base_skills.py`, `write_readme.py`) stay `uv` scripts.
 - **Stubs:** `scaffold.py` writes job and training stubs from `templates/notebook.py`, and a `scripts/databricks.yml` stub with a notebook task for each one. A module's `app_scripts` get plain-module stubs.
 - **Checks:** `check_skill.py` checks that every job task in `scripts/databricks.yml` is a `notebook_task`, and that the notebook it runs starts with the notebook header and ends with the guarded run cell. `tests/test_skills.py` checks the same on the hand-built skills, and also that each task's `base_parameters` are flags of its notebook's `build_parser()`.
 - **The skeleton's helpers** (`notebook_argv`, `script_dir`, `get_spark`) are copies of the shared `parse.py`'s; `tests/test_forge_smith.py` fails when they drift.

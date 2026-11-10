@@ -101,12 +101,21 @@ The working directory ends up with the state file, the bundle, and (for module 0
 
 ```
 <workdir>/
+├── README.md            # the project explained for whoever opens the folder; write_readme.py writes it
 ├── extraction.json      # resolved values and document types; render.py reads it
 ├── provided_schema.*    # optional: the schema the user brought, as given (module 00)
 ├── ground_truth.jsonl   # optional labels for module 05
 ├── <name>-extract/      # Declarative Automation Bundle: parse → extract (→ localize, review_queue) job, plus review_sync; rendered by render.py
-└── <app_name>/          # optional review app (module 07): an AppKit project; render.py copies in the review files
+└── <review.app_name>/   # optional review app (module 07): an AppKit project; render.py copies in the review files
 ```
+
+**The README.** Each time a module's Verify passes, module 00's included, update `<workdir>/README.md`:
+
+```bash
+uv run <skill>/scripts/write_readme.py --state <workdir>/extraction.json
+```
+
+It explains the project to whoever opens the folder, from this skill and every Forge state file in `<workdir>`: what it builds, its settings, and each module's purpose, outputs, and status. Its Notes section is the user's, and is kept. If the script reports `kept_edited`, someone edited the README outside Notes: tell the user, and pass `--force` only if they agree. A README.md that `<workdir>` already had is left alone, and the project's goes to `FORGE-README.md`.
 
 **Resuming.** If `<workdir>/extraction.json` exists, read it, confirm its values with the user, and rerun module 00's base-skill check (step 2). If it has no `review_app` (it's from before version 0.3.0), ask module 00's review app question. Then start at the first module missing from `completed`, or jump in here:
 
@@ -144,6 +153,7 @@ The working directory ends up with the state file, the bundle, and (for module 0
 - With labels, module 05 meets its thresholds: classification accuracy ≥ 0.95 (when labels include `doc_type`), field accuracy ≥ 0.9, and array soft F1 ≥ 0.8 (when arrays are labeled). Report the run URL. Without labels, say that accuracy is unmeasured.
 - When `localize` is on, at least 80% of cited values are localized.
 - When `review_app` is on, a value approved and a value corrected in the app are in the typed table, with confidence 1.0 and listed in `reviewed_fields`, and only the named reviewers can open the app.
+- `<workdir>/README.md` describes the finished project: `write_readme.py` ran after the last module.
 - You told the user the job name, the tables, the review view, and anything you skipped. If `forge` started this skill, return to it for a next step.
 
 ## Base-skill guidance to override

@@ -15,6 +15,7 @@ requires:                                   # use-case skills this one runs firs
     uses: [doc-index.json, index_name and its columns (chunk_id, file_name, page_numbers, source_uri), filter_values, corpus_description, evals.jsonl]
 shared:                                     # identical in every skill that carries them; tests/test_skills.py checks
   - scripts/check_base_skills.py
+  - scripts/write_readme.py
 
 catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
   title: Document Q&A agent

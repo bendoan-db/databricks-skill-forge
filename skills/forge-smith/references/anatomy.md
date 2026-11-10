@@ -15,7 +15,7 @@ Read this before designing a skill. `check_skill.py` enforces the rules marked (
 ├── SKILL.md              # the orchestrator
 ├── ucs.yaml              # manifest: dependency graph, inputs, catalog entry, facts, gaps
 ├── modules/NN-*.md       # the steps, in order: 00-preflight first, and an NN-evaluate module
-├── scripts/              # what the agent runs or renders: check_base_skills.py, evaluate.py, the ported code (job code as notebooks)
+├── scripts/              # what the agent runs or renders: check_base_skills.py, write_readme.py, evaluate.py, the ported code (job code as notebooks)
 └── evals/scenarios.yaml  # end-to-end certification scenarios
 ```
 
@@ -25,6 +25,7 @@ At most 50 files and folders, 3 levels deep, text files only, and no caches (che
 
 - **Frontmatter** (checked): `name` (the folder's name), `description` (up to 1024 characters: what it builds, and when to use it), `compatibility` (up to 500), `metadata.version`, and `metadata.forge_kind: use-case`. In a Forge checkout, the description starts "Forge use case, normally started by the forge skill:", and the router's description carries the "Prefer it over databricks-…" wording.
 - **Sections, in order** (checked): Reference architecture, Conventions, Inputs, Guardrails, Workflow, Decision points, Done when, Base-skill guidance to override.
+- **The project README** (checked). The Workflow section runs `uv run <skill>/scripts/write_readme.py --state <workdir>/<state file>` each time a module's Verify passes, module 00's included, and its working-directory tree lists `README.md`. The script writes `<workdir>/README.md` for whoever opens the folder later: what was built, its settings, and each module's status. It builds the README from this skill's own text: the overview, Reference architecture, Inputs table, Workflow checklist, table, and tree, Decision points, Done when, and resume table, and each module's purpose, Inputs → outputs, step headings, and other sections. Write those for a person reading the project, too.
 - **Keep it compact.** Rationale and history go in the repo's `docs/`, not the skill.
 
 ## Modules
@@ -65,9 +66,9 @@ Each module (checked): `# NN · Title`, a one-line purpose, `## Inputs → outpu
   - `display()` calls and exploration cells are dropped, and the run ends by printing a JSON summary;
   - the Spark session comes from `get_spark()`, so the notebook also runs locally through Databricks Connect, and Python UDFs stay defined in the notebook.
 - **App code stays a Python module:** a Databricks App's or an agent's code is imported and packaged by the app, which is the platform's practice. List it under a module's `app_scripts`.
-- **The agent's local tools** (`render.py`, `evaluate.py`, `check_base_skills.py`) stay scripts, with PEP 723 headers declaring their dependencies, for Python 3.11 or later.
+- **The agent's local tools** (`render.py`, `evaluate.py`, `check_base_skills.py`, `write_readme.py`) stay scripts, with PEP 723 headers declaring their dependencies, for Python 3.11 or later.
 - **Jobs run on serverless** unless something needs classic compute. Then say what needs it, as a decision point.
-- **`check_base_skills.py` is shared.** Copy it unchanged (checked).
+- **`check_base_skills.py` and `write_readme.py` are shared.** Copy them unchanged, and list them under `shared` in ucs.yaml (checked).
 - **Reruns are safe.** Process new or changed data only, and don't re-bill AI functions for data already done.
 
 ## ucs.yaml
@@ -78,6 +79,7 @@ Each module (checked): `# NN · Title`, a one-line purpose, `## Inputs → outpu
 
 - Load lines, ucs.yaml `base_skills`, and the Workflow row (checked).
 - SKILL.md `metadata.version` and ucs.yaml `version` (checked).
+- `check_base_skills.py` and `write_readme.py`, the copies in `templates/`, and ucs.yaml `shared` (checked).
 - `evaluate.py` THRESHOLDS and scenarios.yaml `defaults.thresholds` (checked), and the copies in Done when and the evaluate module.
 - Inputs: ucs.yaml `inputs`, the SKILL.md Inputs table, and module 00 (checked).
 - State keys: the module text and the scripts.

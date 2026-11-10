@@ -14,6 +14,7 @@ shared:                                     # identical in every skill that carr
   - scripts/parse.sql
   - scripts/check_base_skills.py
   - scripts/parse_quality.py
+  - scripts/write_readme.py
 
 catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
   title: Document search index

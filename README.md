@@ -46,7 +46,7 @@ Each use-case skill provides:
 
    Type just `/forge` to see the use cases.
 
-4. **Answer the agent's questions.** `forge` tells you which use case it picked, and that skill asks for what it needs, such as where the documents are and which AI Search endpoint to use. It asks before anything billable or shared, and shows you results at each step. Its progress is saved in the project folder, so you can run `/forge` there again later to pick up where you left off.
+4. **Answer the agent's questions.** `forge` tells you which use case it picked, and that skill asks for what it needs, such as where the documents are and which AI Search endpoint to use. It asks before anything billable or shared, and shows you results at each step. Its progress is saved in the project folder, so you can run `/forge` there again later to pick up where you left off. A `README.md` in that folder explains the project: what it builds, its settings, and what each module does and whether it's done. Forge updates it after each module.
 
 ## Available skills
 
@@ -147,6 +147,8 @@ It skips the MLflow skills and the MCP server, because no Forge skill needs them
 Invoke `forge` and say what you want built, for example `/forge build a document Q&A agent over /Volumes/main/legal/contracts`. Type just `/forge` to see the use cases. A plain request without `/forge` ("build a chatbot over the PDFs in my volume") should still start in `forge`; the routing evals check that.
 
 `forge` picks the use case from what you want at the end: an agent that answers questions, a search index, or values in tables. If your request could mean more than one, it asks. It tells you which use case it picked, then the use-case skill takes over. If the working directory already has a build in progress, `forge` offers to resume it.
+
+Every use case writes a `README.md` into the working directory and updates it after each module. It covers every Forge use case built in that folder: its architecture, its settings, each module's purpose, outputs, steps, and status, the decisions you can change, and how to resume. Add your own notes in its Notes section, which updates keep. If the folder already has a `README.md` of its own, Forge leaves it alone and writes `FORGE-README.md` instead.
 
 ### Document index
 
@@ -261,6 +263,7 @@ databricks-skill-forge/
 - **Point to base skills; don't restate them.** A step that needs platform detail names the base skill and reference file in a **Load:** line. Base skills aren't loaded up front.
 - **Gate every module.** Each module ends with a Verify step that can actually fail.
 - **Render, don't hand-fill.** Values resolved during the workflow go into a state file, and templates are rendered from it by a script that validates the result.
+- **Explain the project in its folder.** Every use-case skill carries the shared `scripts/write_readme.py`, and its Workflow section runs it after each module. It writes the project's `README.md` from the skill's own text and the state file, so write the overview, module purposes, and sections for the person who opens the project later. The tests check the step and the shared copies.
 - **Ship pipeline and training code as Databricks notebooks.** Job tasks are notebook tasks, so users can open, change, and rerun them in their workspace. Each one reads its settings from widgets and still runs as a script through Databricks Connect (`scripts/parse.py` is the pattern). App and agent code stays as normal Python modules, and local helper tools stay scripts. The tests check every job task.
 - **Docs win over base skills.** When a base skill is out of date, add a one-line override to SKILL.md, record the gap with doc evidence in `ucs.yaml` (`coverage_gaps`), and draft an upstream change proposal in `docs/`.
 - **Track hard-coded facts.** Platform limits and defaults a skill depends on go in `ucs.yaml` (`facts`), with a source and the files that use them.

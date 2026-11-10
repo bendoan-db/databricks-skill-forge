@@ -83,9 +83,18 @@ The working directory ends up with the state file and the bundle:
 
 ```
 <workdir>/
+├── README.md             # the project explained for whoever opens the folder; write_readme.py writes it
 ├── guardrail-eval.json   # resolved values; render.py and the scripts read it
 └── <name>/               # Declarative Automation Bundle: load_prompts → run_eval job, rendered by render.py
 ```
+
+**The README.** Each time a module's Verify passes, module 00's included, update `<workdir>/README.md`:
+
+```bash
+uv run <skill>/scripts/write_readme.py --state <workdir>/guardrail-eval.json
+```
+
+It explains the project to whoever opens the folder, from this skill and every Forge state file in `<workdir>`: what it builds, its settings, and each module's purpose, outputs, and status. Its Notes section is the user's, and is kept. If the script reports `kept_edited`, someone edited the README outside Notes: tell the user, and pass `--force` only if they agree. A README.md that `<workdir>` already had is left alone, and the project's goes to `FORGE-README.md`.
 
 **Resuming.** If `<workdir>/guardrail-eval.json` exists, read it, confirm its values with the user, and rerun module 00's base-skill check (step 2). Then start at the first module missing from `completed`, or jump in here:
 
@@ -112,6 +121,7 @@ The working directory ends up with the state file and the bundle:
 - `<prefix>_prompts` holds the dataset, and you reported its prompts by dataset and label, and what was dropped.
 - The model service `<model_service>` has exactly the chosen guardrails, and `guardrail_service.py --check` passes.
 - A full run scored at least 98% of its prompts (`scored_rate`; `evaluate.py` exits 0), and you reported recall, precision, false-positive rate, and F1 overall and per dataset, each guardrail's blocks and false positives, the categories with the lowest recall, latency, and each target met or missed. Report the MLflow run.
+- `<workdir>/README.md` describes the finished project: `write_readme.py` ran after the last module.
 - You told the user the model service, the tables, and how to delete them (each after a confirmation naming it). If `forge` started this skill, return to it for a next step.
 
 ## Base-skill guidance to override

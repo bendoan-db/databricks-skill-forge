@@ -7,8 +7,8 @@
     uv run <smith>/scripts/scaffold.py --state <workdir>/smith.json [--skills-dir <dir>] [--out <dir>]
 
 Writes <out>/<name>/ (default <out>: the skills folder holding forge-smith): SKILL.md, modules/, ucs.yaml,
-evals/scenarios.yaml, scripts/check_base_skills.py, scripts/evaluate.py, and a stub for every other script a
-module lists. Job and training code stubs are Databricks notebooks (templates/notebook.py), a scripts/databricks.yml
+evals/scenarios.yaml, scripts/check_base_skills.py, scripts/write_readme.py (which writes the README of each project the
+skill builds), scripts/evaluate.py, and a stub for every other script a module lists. Job and training code stubs are Databricks notebooks (templates/notebook.py), a scripts/databricks.yml
 stub runs them as notebook tasks, and scripts/render.py (templates/render.py) copies them into the bundle, keeping
 copies the user edited in the workspace; the module that deploys the job says how to keep such an edit. App code
 stubs (a module's `app_scripts`) stay Python modules. Everything the
@@ -38,7 +38,7 @@ TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 INPUT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 SCRIPT_RE = re.compile(r"^scripts/[\w.-]+$")
 APP_SCRIPT_RE = re.compile(r"^scripts/([\w.-]+/)?[\w.-]+$")  # app code may sit in its own folder, such as scripts/app/
-LOCAL_TOOLS = {"render.py", "evaluate.py", "check_base_skills.py"}  # run by the agent with uv, not deployed
+LOCAL_TOOLS = {"render.py", "evaluate.py", "check_base_skills.py", "write_readme.py"}  # run by the agent with uv
 MARK = "<!-- smith: {} -->"
 EDITING_NOTEBOOKS = """## Editing the job's notebooks
 
@@ -58,6 +58,20 @@ databricks workspace export <file_path>/src/<notebook> --format SOURCE --file <w
 `render.py` keeps an edited copy when it renders again, and lists it under `kept_edited`. `--force` replaces it with \
 the skill's version. A kept copy doesn't pick up later changes to the skill, so tell the user which files are kept.
 """
+
+
+README_STEP = """**The README.** Each time a module's Verify passes, module 00's included, update `<workdir>/README.md`:
+
+```bash
+uv run <skill>/scripts/write_readme.py --state <workdir>/{state}
+```
+
+It explains the project to whoever opens the folder, from this skill and every Forge state file in `<workdir>`: what \
+it builds, its settings, and each module's purpose, outputs, and status. Its Notes section is the user's, and is kept. \
+If the script reports `kept_edited`, someone edited the README outside Notes: tell the user, and pass `--force` only \
+if they agree. A README.md that `<workdir>` already had is left alone, and the project's goes to `FORGE-README.md`.
+"""
+SHARED = ["scripts/check_base_skills.py", "scripts/write_readme.py"]  # copied unchanged from templates/
 
 
 class BlueprintError(Exception):
@@ -243,6 +257,17 @@ def skill_md(bp: dict) -> str:
           f"{cell(m.get('produces') or f'`{state}`, tooling, cost go-ahead')} | "
           f"{', '.join(d['name'] for d in m.get('base_skills', []))} |" for m in bp["modules"]),
         "",
+        "The working directory ends up with the README, the state file, and what the modules create:",
+        "",
+        "```",
+        "<workdir>/",
+        f"├── {'README.md'.ljust(max(len(state), 9) + 2)}# the project explained for whoever opens the folder; "
+        "write_readme.py writes it",
+        f"├── {state.ljust(max(len(state), 9) + 2)}# resolved values; the scripts read it",
+        "└── " + MARK.format("each folder or file the modules create in the working directory, with what it is"),
+        "```",
+        "",
+        README_STEP.format(state=state),
         f"**Resuming.** If `<workdir>/{state}` exists, read it, confirm its values with the user, and rerun module 00's "
         "base-skill check (step 3). Then start at the first module missing from `completed`.",
         "",
@@ -260,6 +285,7 @@ def skill_md(bp: dict) -> str:
         f"- Module {evaluate_module(bp)['id'][:2]} meets its thresholds: "
         + ", ".join(f"`{k}` ≥ {v}" for k, v in bp["thresholds"].items()) + ". Report the run URL.",
         *(f"- {d}" for d in bp.get("done_when") or [MARK.format("what else must be true, and what to tell the user")]),
+        "- `<workdir>/README.md` describes the finished project: `write_readme.py` ran after the last module.",
         "- You told the user what was built, where it is, and anything you skipped."
         + (" If `forge` started this skill, return to it for a next step." if routed else ""),
         "",
@@ -445,7 +471,7 @@ def ucs_yaml(bp: dict, skills_dir: Path) -> str:
         "source": {**(bp.get("source") or {}), "built_with": "forge-smith", "built_on": date.today().isoformat()},
         "inputs": {"required": [i["name"] for i in inputs["required"]],
                    "optional": [i["name"] for i in inputs.get("optional") or []]},
-        "shared": ["scripts/check_base_skills.py"],
+        "shared": SHARED,
         "catalog": {"title": bp["catalog"]["title"], "choose_when": bp["catalog"]["choose_when"],
                     "not_for": bp["catalog"]["not_for"], "produces": bp["catalog"]["produces"],
                     "state_file": bp["state_file"], "next": bp["catalog"].get("next") or []},
@@ -601,7 +627,8 @@ def scaffold(bp: dict, skills_dir: Path, out: Path) -> Path:
     for rel, text in files.items():
         (folder / rel).parent.mkdir(parents=True, exist_ok=True)
         (folder / rel).write_text(text)
-    shutil.copyfile(TEMPLATES / "check_base_skills.py", folder / "scripts" / "check_base_skills.py")
+    for rel in SHARED:
+        shutil.copyfile(TEMPLATES / Path(rel).name, folder / rel)
     return folder
 
 

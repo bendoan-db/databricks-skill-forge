@@ -79,11 +79,12 @@ def test_frontmatter_and_layout():
         assert body.startswith(f"# {path.name[:2]} · ") and "\n## Verify" in body, path.name
 
 
-def test_check_base_skills_template_is_the_shared_copy():
-    template = (SMITH / "templates" / "check_base_skills.py").read_bytes()
+@pytest.mark.parametrize("name", ["check_base_skills.py", "write_readme.py"])
+def test_shared_templates_are_the_shared_copies(name: str):
+    template = (SMITH / "templates" / name).read_bytes()
     for skill in SKILLS:
-        assert (SKILLS_DIR / skill / "scripts" / "check_base_skills.py").read_bytes() == template, (
-            f"{skill}: copy scripts/check_base_skills.py over skills/forge-smith/templates/check_base_skills.py too")
+        assert (SKILLS_DIR / skill / "scripts" / name).read_bytes() == template, (
+            f"{skill}: copy scripts/{name} over skills/forge-smith/templates/{name} too")
 
 
 def test_forge_points_to_smith():
@@ -113,6 +114,16 @@ def test_check_skill_catches_problems(tmp_path: Path):
     assert "03-evaluate: Load lines name ['databricks-vector-search']" in problems
     assert "THRESHOLDS and evals/scenarios.yaml defaults.thresholds differ" in problems
     assert "01-ingest-parse.md: needs a ## Verify section" in problems and "smith: marker" in problems
+
+    skill_md = folder / "SKILL.md"
+    skill_md.write_text(skill_md.read_text().replace("write_readme.py --state", "write_readme.py --stat"))
+    (folder / "scripts" / "write_readme.py").write_text("# edited\n")
+    ucs = folder / "ucs.yaml"
+    ucs.write_text(ucs.read_text().replace("  - scripts/write_readme.py\n", ""))
+    problems = "\n".join(check_skill.check(folder))
+    assert "SKILL.md Workflow must run `uv run <skill>/scripts/write_readme.py --state <workdir>/doc-index.json`" in problems
+    assert "scripts/write_readme.py differs from Forge's shared copy" in problems
+    assert "ucs.yaml shared must list scripts/write_readme.py" in problems
 
 
 # ── scan.py ──────────────────────────────────────────────────────────────────────
@@ -244,8 +255,9 @@ def test_scaffold_writes_a_skill_that_passes_once_filled(skills: Path, tmp_path:
     assert "| Where new claims land | `claims_table` | The three-part name" in preflight
     assert "`databricks tables get <claims_table> --profile <profile>` succeeds" in preflight
     assert "**Load:** `databricks-unity-catalog` `references/1-access-control.md` (effective grants)." in preflight
-    shared = (SMITH / "templates" / "check_base_skills.py").read_bytes()
-    assert (folder / "scripts" / "check_base_skills.py").read_bytes() == shared
+    for name in ("check_base_skills.py", "write_readme.py"):
+        assert (folder / "scripts" / name).read_bytes() == (SMITH / "templates" / name).read_bytes()
+        assert f"scripts/{name}" in ucs["shared"]
     assert "THRESHOLDS = {'precision_at_review': 0.8}" in (folder / "scripts" / "evaluate.py").read_text()
     ingest = (folder / "scripts" / "ingest.py").read_text()  # job code: a Databricks notebook stub
     assert ingest.startswith(check_skill.NOTEBOOK_HEADER) and ingest.rstrip().endswith(check_skill.RUN_CELL)
@@ -257,6 +269,25 @@ def test_scaffold_writes_a_skill_that_passes_once_filled(skills: Path, tmp_path:
 
     again = run("scaffold.py", "--state", str(state), "--skills-dir", str(skills))
     assert again.returncode == 1 and "already exists" in again.stderr
+
+
+def test_generated_skill_writes_its_project_readme(skills: Path, tmp_path: Path):
+    """Skills forge-smith builds write a README into each project they build, like the hand-built ones."""
+    bp = example_blueprint()
+    folder = scaffold.scaffold(bp, skills, skills)
+    fill(folder)
+    state = tmp_path / "work" / bp["state_file"]
+    state.parent.mkdir()
+    state.write_text(json.dumps({"name": "claims", "profile": "DEFAULT", "completed": ["00-preflight"]}))
+    result = subprocess.run([sys.executable, "-B", str(folder / "scripts" / "write_readme.py"), "--state", str(state)],
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["covers"] == [bp["name"]]
+    text = (state.parent / "README.md").read_text()
+    assert f"\n# {bp['catalog']['title']}: `claims`\n" in text and "#### 00 · Preflight (done)" in text
+    assert f"└── {bp['state_file']}" in text  # the tree's last entry: the agent's lines replaced its marker
+    for module in bp["modules"][1:]:
+        assert f"#### {module['id'][:2]} · {module['title']} (" in text
 
 
 def job_blueprint() -> dict:
