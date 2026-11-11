@@ -13,6 +13,7 @@ Read this before designing a skill. `check_skill.py` enforces the rules marked (
 ```
 <name>/
 ├── SKILL.md              # the orchestrator
+├── README.md             # the overview for users: what it's for, what they provide, what they get
 ├── ucs.yaml              # manifest: dependency graph, inputs, catalog entry, facts, gaps
 ├── modules/NN-*.md       # the steps, in order: 00-preflight first, and an NN-evaluate module
 ├── scripts/              # what the agent runs or renders: check_base_skills.py, write_readme.py, evaluate.py, the ported code (job code as notebooks)
@@ -27,6 +28,15 @@ At most 50 files and folders, 3 levels deep, text files only, and no caches (che
 - **Sections, in order** (checked): Reference architecture, Conventions, Inputs, Guardrails, Workflow, Decision points, Done when, Base-skill guidance to override.
 - **The project README** (checked). The Workflow section runs `uv run <skill>/scripts/write_readme.py --state <workdir>/<state file>` each time a module's Verify passes, module 00's included, and its working-directory tree lists `README.md`. The script writes `<workdir>/README.md` for whoever opens the folder later: what was built, its settings, and each module's status. It builds the README from this skill's own text: the overview, Reference architecture, Inputs table, Workflow checklist, table, and tree, Decision points, Done when, and resume table, and each module's purpose, Inputs → outputs, step headings, and other sections. Write those for a person reading the project, too.
 - **Keep it compact.** Rationale and history go in the repo's `docs/`, not the skill.
+
+## README.md: the overview
+
+The overview is for a Databricks user deciding whether to use the skill, and what it will ask and build. Write it for someone who will never read SKILL.md: plain words, no agent instructions. Sections, in order (checked): What it's for, What you provide, What you get, How it works; then Before it acts, and Running it.
+- **What it's for:** what to choose it for and what not to, from the catalog entry, naming the neighboring skills.
+- **What you provide:** the prerequisites (workspace features, tools, privileges), then a table `| Input | Required | Default | What it is |` with a row for every input in ucs.yaml, `Yes` for the required ones and `No` for the rest (checked).
+- **What you get:** each resource it creates in the workspace, by name; the working-directory tree, with the state file (checked); and what "done" means, with each threshold as `≥ value` (checked).
+- **How it works:** a row per module, `| NN | Step | What happens |` (checked).
+- **No version number:** releases and drift edits bump the version, and the overview would fall behind.
 
 ## Modules
 
@@ -79,6 +89,7 @@ Each module (checked): `# NN · Title`, a one-line purpose, `## Inputs → outpu
 
 - Load lines, ucs.yaml `base_skills`, and the Workflow row (checked).
 - SKILL.md `metadata.version` and ucs.yaml `version` (checked).
+- README.md, the overview: its inputs table, state file, module rows, and thresholds (checked).
 - `check_base_skills.py` and `write_readme.py`, the copies in `templates/`, and ucs.yaml `shared` (checked).
 - `evaluate.py` THRESHOLDS and scenarios.yaml `defaults.thresholds` (checked), and the copies in Done when and the evaluate module.
 - Inputs: ucs.yaml `inputs`, the SKILL.md Inputs table, and module 00 (checked).

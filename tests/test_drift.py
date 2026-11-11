@@ -220,7 +220,7 @@ def test_version_and_pin(repo: Path):
     ucs = yaml.safe_load((repo / "skills" / skill / "ucs.yaml").read_text())
     assert new == edits.bump(old, "minor") == ucs["version"] and ucs["upstream"] == "databricks/databricks-agent-skills@v9.9.9"
     assert f'version: "{new}"' in (repo / "skills" / skill / "SKILL.md").read_text()
-    assert f"| [`{skill}`](skills/{skill}/SKILL.md) | {new} |" in (repo / "README.md").read_text()
+    assert f"| [`{skill}`](skills/{skill}/README.md) | {new} |" in (repo / "README.md").read_text()
     router = edits.set_version_and_pin(repo, "forge", "patch", "v9.9.9")  # no pin; version in forge.yaml
     assert yaml.safe_load((repo / "skills" / "forge" / "forge.yaml").read_text())["version"] == router
 

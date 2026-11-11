@@ -117,6 +117,37 @@ def test_workflow_writes_the_project_readme(skill: str):
     assert "`<workdir>/README.md`" in done
 
 
+OVERVIEW_SECTIONS = ["What it's for", "What you provide", "What you get", "How it works"]
+
+
+def overview_section(text: str, title: str) -> str:
+    return text.split(f"\n## {title}\n", 1)[1].split("\n## ", 1)[0] if f"\n## {title}\n" in text else ""
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+def test_overview_matches_the_skill(skill: str):
+    """README.md is the skill's overview for Databricks users: what it's for, what they provide, what they get. It
+    repeats the inputs, state file, modules, and thresholds, so it must agree with ucs.yaml and evaluate.py."""
+    path = SKILLS_DIR / skill / "README.md"
+    assert path.is_file(), f"{skill}: add README.md, the overview for users"
+    text = path.read_text()
+    headings = [line[3:].strip() for line in text.splitlines() if line.startswith("## ")]
+    assert [h for h in headings if h in OVERVIEW_SECTIONS] == OVERVIEW_SECTIONS, f"{skill}: README.md sections"
+    ucs = manifest(skill)
+    provide, get, how = (overview_section(text, s) for s in OVERVIEW_SECTIONS[1:])
+    for kind, names in (("Yes", ucs["inputs"]["required"]), ("No", ucs["inputs"].get("optional") or [])):
+        for name in names:
+            assert f"| `{name}` | {kind} |" in provide, f"{skill}: README.md inputs table needs | `{name}` | {kind} |"
+    assert ucs["catalog"]["state_file"] in get, f"{skill}: README.md What you get names the state file"
+    for module in ucs["modules"]:
+        assert f"\n| {module['id'][:2]} | " in how, f"{skill}: README.md How it works has no row for {module['id']}"
+    tree = ast.parse((SKILLS_DIR / skill / "scripts" / "evaluate.py").read_text())
+    thresholds = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                      and getattr(n.targets[0], "id", "") == "THRESHOLDS")
+    for metric, floor in thresholds.items():
+        assert f"≥ {floor}" in get, f"{skill}: README.md What you get doesn't give {metric}'s threshold, ≥ {floor}"
+
+
 NOTEBOOK_HEADER = "# Databricks notebook source"
 RUN_CELL = ("# As a job's notebook task, the settings arrive as widgets; run as a script, as command-line flags.\n"
             'if __name__ == "__main__":\n'

@@ -20,7 +20,7 @@ shared:                                     # identical in every skill that carr
 catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
   title: Guardrail evaluation
   choose_when: how well Unity AI Gateway's built-in guardrails (service policies for sensitive data, unsafe content, and jailbreaks) block unsafe prompts and let safe ones through, measured on a safety dataset; guardrail recall, false positives, or red-teaming a model service's policies
-  not_for: evaluating a document agent's answers (forge-doc-qa-agent); extracting values from documents (forge-structured-doc-extraction)
+  not_for: setting up model services and their guardrails for users (forge-aig-create-model-service); evaluating a document agent's answers (forge-doc-qa-agent)
   produces: a model service with the built-in guardrails attached, every prompt's verdict and blocking guardrail in a results table, and recall, precision, false-positive rate, and F1 overall, per dataset, per category, and per guardrail, in Delta tables and MLflow
   state_file: guardrail-eval.json           # forge offers to resume this skill when the file is in <workdir>
   next: []

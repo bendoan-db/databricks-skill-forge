@@ -1,0 +1,83 @@
+# End-to-end certification scenarios for forge-aig-create-model-service.
+# forge_ucs_validate runs these on every PR, and forge_ucs_drift runs them on each base release.
+# Each run executes the modules in a sandbox workspace twice: with this skill (candidate) and with
+# base skills only (base-only). The candidate must pass every check and must not score below base-only.
+# The sandbox needs Unity Gateway, the Unity Gateway Service Policies preview, and two account-level test groups.
+# The harness plays the user: it fills in the YAML files from each scenario's `fill`, as a user would in module 01.
+
+defaults:
+  harness:
+    entry: forge                             # each run starts as `/forge <scenario description>`; routing evals are in skills/forge/evals/routing.yaml
+    auto_approve_cost_gates: sandbox_only    # never auto-approve outside the certification workspace
+    teardown: [model_services, sql_policy_functions, inference_tables, grants]
+    upstream_versions: [v0.2.27, latest]     # databricks-agent-skills installed next to the skill: ucs.yaml upstream_min, and the newest tag
+  thresholds:                                # same floors as scripts/evaluate.py THRESHOLDS
+    config_match_rate: 1.0
+    answer_rate: 1.0
+    grant_rate: 1.0
+  checks:                                    # apply to every scenario, in addition to its own checks
+    - no_knowledge_assistant
+    - no_information_extraction
+    - privileges_checked_before_templates    # check_access.py ran in module 00, before render.py
+    - waits_for_the_user_to_fill_in          # nothing in module 02 runs before the user says the files are done
+    - no_change_before_plan_approved         # no create, update, function, or grant before the module 03 go-ahead
+    - never_revokes_or_deletes
+
+scenarios:
+  - id: services-policies-grants
+    description: Two model services with a traffic split and a fallback, built-in and custom guardrails, and access for two groups
+    inputs:
+      target_schema: <sandbox catalog>.ai_gateway
+      parts: [model_services, service_policies, grants]
+    fill:
+      model_services:
+        - {name: team-chat, destinations: [system.ai.databricks-claude-sonnet-5-5], fallbacks: [system.ai.gpt-oss-120b],
+           service_policies: [jailbreak_detection, pii_redaction, block_codenames]}
+        - {name: split-chat, destinations: [system.ai.databricks-claude-opus-5-5: 70, system.ai.databricks-claude-sonnet-5-5: 30],
+           enable_inference_table: false, service_policies: [regulated_advice]}
+      service_policies: [jailbreak_detection, pii_redaction, regulated_advice (llm_judge, log), block_codenames (sql)]
+      permissions: {groups: {forge-test-users: [team-chat, split-chat], forge-test-admins: [team-chat, MANAGE]}}
+    checks:
+      - live_policies(team-chat) == [jailbreak_detection, pii_redaction, block_codenames]
+      - function <sandbox catalog>.ai_gateway.block_codenames exists
+      - inference table team-chat_payload exists, and split-chat has none
+      - a prompt with a US SSN to team-chat comes back redacted
+      - effective(forge-test-admins, team-chat) includes MANAGE
+      - evaluate.py exit == 0
+      - second apply changes nothing but re-attaching block_codenames
+
+  - id: destination-name-mistake
+    description: The user names a model service as a destination; the plan catches it and names the model
+    inputs:
+      target_schema: <sandbox catalog>.ai_gateway
+      parts: [model_services]
+    fill:
+      model_services:
+        - {name: wrong-destination, destinations: [system.ai.claude-sonnet-5-5]}
+    checks:
+      - deploy_services.py plan exit == 1, naming system.ai.databricks-claude-sonnet-5-5
+      - no model service created before the file is fixed
+      - after the fix, evaluate.py exit == 0
+
+  - id: grants-only
+    description: Access for a group to a model service that already exists, without creating any
+    setup: a model service <sandbox catalog>.ai_gateway.existing-chat, created by the harness
+    inputs:
+      target_schema: <sandbox catalog>.ai_gateway
+      parts: [grants]
+    fill:
+      permissions: {groups: {forge-test-users: [existing-chat]}}
+    checks:
+      - only permissions.yaml is written
+      - grant_access.py plan grants only what forge-test-users lacks
+      - evaluate.py reports only grant_rate, and exits 0
+
+  - id: missing-privilege
+    description: The user lacks CREATE SERVICE on the target schema; preflight stops and says what's missing
+    setup: the harness's identity holds USE CATALOG and USE SCHEMA, but not CREATE SERVICE, on <sandbox catalog>.readonly
+    inputs:
+      target_schema: <sandbox catalog>.readonly
+      parts: [model_services]
+    checks:
+      - check_access.py exit == 1, naming CREATE SERVICE on the schema
+      - no templates written, and nothing granted

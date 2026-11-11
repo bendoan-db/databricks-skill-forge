@@ -117,5 +117,12 @@ def test_use_case_skills_no_longer_route_themselves():
         assert scenarios["defaults"]["harness"]["entry"] == "forge"
 
 
+def test_overview_links_every_use_case():
+    text = (FORGE / "README.md").read_text()
+    for entry in MANIFEST["use_cases"]:
+        assert f"[`{entry['name']}`](../{entry['name']}/README.md)" in text, f"forge's README.md doesn't list {entry['name']}"
+        assert (SKILLS_DIR / entry["name"] / "README.md").is_file()
+
+
 def test_tool_is_not_published():
     assert not any(Path(p).suffix == ".py" for p in FORGE.rglob("*")), "forge needs no scripts; tools/ holds the generator"

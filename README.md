@@ -41,6 +41,7 @@ Each use-case skill provides:
    ```
    /forge build a document Q&A agent over the PDFs in /Volumes/main/legal/contracts
    /forge build a search index over /Volumes/main/hr/policies that our app can query
+   /forge set up AI Gateway model services with guardrails for our POC team, and give data-science access
    /forge pull the invoice number, vendor, and total from /Volumes/main/ap/invoices into tables
    ```
 
@@ -52,14 +53,15 @@ Each use-case skill provides:
 
 | Skill | Version | What it builds |
 |---|---|---|
-| [`forge`](skills/forge/SKILL.md) | 0.3.0 | The entry point. It matches your request to one of the use-case skills below and hands off to it, resumes a build already in the working directory, and points to a base skill when no use case fits, or to `forge-smith` to build a new use case. It builds nothing itself. |
-| [`forge-unstructured-doc-extraction`](skills/forge-unstructured-doc-extraction/SKILL.md) | 0.2.0 | An AI Search index over the files in a Unity Catalog volume (PDF, DOCX, PPTX, images), for an agent or app to query. It parses with `ai_parse_document`, chunks with `ai_prep_search` (document-level metadata filters, optional chart readings, by a vision model or from the parser's chart data, with each chart's title, units, and legend), keeps the index fresh as files arrive, and scores retrieval (document and page hit rates) in MLflow. |
-| [`forge-doc-qa-agent`](skills/forge-doc-qa-agent/SKILL.md) | 0.4.0 | A document Q&A (RAG) agent that cites its sources: a LangGraph agent on Databricks Apps (Agent Runtime) that searches a `forge-unstructured-doc-extraction` index, evaluated with MLflow judges. It runs `forge-unstructured-doc-extraction` first when the documents aren't indexed yet. Default model: Claude Sonnet 5.5 (`system.ai.claude-sonnet-5-5`). |
-| [`forge-structured-doc-extraction`](skills/forge-structured-doc-extraction/SKILL.md) | 0.4.0 | Typed Delta tables of the fields in a volume's documents, with a confidence score and citation for every value. It classifies mixed documents and splits multi-document packets (loan or claim files) with `ai_classify`, extracts per document type with `ai_extract`, keeps a review queue of low-confidence and unscored values, with cutoffs calibrated per document type from the corpus's own confidence levels, scores accuracy against labeled documents in MLflow, and can find word-level boxes for each value with OCR. An optional review app (AppKit on Lakebase) lets people approve or correct the queued values, and writes their decisions back to the tables. |
-| [`forge-evaluate-guardrails`](skills/forge-evaluate-guardrails/SKILL.md) | 0.1.0 | How well Unity AI Gateway's built-in guardrails (Sensitive Data Detection, Unsafe Content, Jailbreak) block unsafe prompts and let safe ones through, on your labeled prompts or, by default, the Aegis 2.0 and ToxicChat test sets. It attaches the guardrails to a model service of its own, sends every prompt through the gateway from a Databricks job, records which guardrail blocked each one, and scores recall, precision, false-positive rate, and F1 overall, per dataset, per harm category, and per guardrail, in Delta tables and MLflow. |
-| [`forge-smith`](skills/forge-smith/SKILL.md) | 0.1.0 | A new use-case skill, built from an existing codebase (a repo or folder of notebooks, SQL, jobs, apps, and bundles). It scans the code for its stages, platform features, and settings; designs the modules, each loading the base skill it needs; writes the preflight discovery questions the new skill asks its user; and generates the skill and checks it against Forge's rules. It reads the code and never runs it. |
+| [`forge`](skills/forge/README.md) | 0.4.0 | The entry point. It matches your request to one of the use-case skills below and hands off to it, resumes a build already in the working directory, and points to a base skill when no use case fits, or to `forge-smith` to build a new use case. It builds nothing itself. |
+| [`forge-unstructured-doc-extraction`](skills/forge-unstructured-doc-extraction/README.md) | 0.2.0 | An AI Search index over the files in a Unity Catalog volume (PDF, DOCX, PPTX, images), for an agent or app to query. It parses with `ai_parse_document`, chunks with `ai_prep_search` (document-level metadata filters, optional chart readings, by a vision model or from the parser's chart data, with each chart's title, units, and legend), keeps the index fresh as files arrive, and scores retrieval (document and page hit rates) in MLflow. |
+| [`forge-doc-qa-agent`](skills/forge-doc-qa-agent/README.md) | 0.4.0 | A document Q&A (RAG) agent that cites its sources: a LangGraph agent on Databricks Apps (Agent Runtime) that searches a `forge-unstructured-doc-extraction` index, evaluated with MLflow judges. It runs `forge-unstructured-doc-extraction` first when the documents aren't indexed yet. Default model: Claude Sonnet 5.5 (`system.ai.claude-sonnet-5-5`). |
+| [`forge-structured-doc-extraction`](skills/forge-structured-doc-extraction/README.md) | 0.4.0 | Typed Delta tables of the fields in a volume's documents, with a confidence score and citation for every value. It classifies mixed documents and splits multi-document packets (loan or claim files) with `ai_classify`, extracts per document type with `ai_extract`, keeps a review queue of low-confidence and unscored values, with cutoffs calibrated per document type from the corpus's own confidence levels, scores accuracy against labeled documents in MLflow, and can find word-level boxes for each value with OCR. An optional review app (AppKit on Lakebase) lets people approve or correct the queued values, and writes their decisions back to the tables. |
+| [`forge-evaluate-guardrails`](skills/forge-evaluate-guardrails/README.md) | 0.1.0 | How well Unity AI Gateway's built-in guardrails (Sensitive Data Detection, Unsafe Content, Jailbreak) block unsafe prompts and let safe ones through, on your labeled prompts or, by default, the Aegis 2.0 and ToxicChat test sets. It attaches the guardrails to a model service of its own, sends every prompt through the gateway from a Databricks job, records which guardrail blocked each one, and scores recall, precision, false-positive rate, and F1 overall, per dataset, per harm category, and per guardrail, in Delta tables and MLflow. |
+| [`forge-aig-create-model-service`](skills/forge-aig-create-model-service/README.md) | 0.1.0 | Unity AI Gateway model services, their guardrails, and who can use them, from YAML templates you fill in. It checks your Unity Catalog privileges first, writes `model-services.yaml` (routing, traffic splits, fallbacks, rate limits, inference tables), `service-policies.yaml` (built-in guardrails, and custom LLM-judge and SQL rules), and `permissions.yaml` (groups, users, and service principals), and waits while you fill them in. Then it plans every change read-only, applies it after your go-ahead, grants only the access that's missing, and checks that each service matches, answers, and has its grants in effect. The starter service routes to Claude Sonnet 5.5's model (`system.ai.databricks-claude-sonnet-5-5`). |
+| [`forge-smith`](skills/forge-smith/README.md) | 0.1.0 | A new use-case skill, built from an existing codebase (a repo or folder of notebooks, SQL, jobs, apps, and bundles). It scans the code for its stages, platform features, and settings; designs the modules, each loading the base skill it needs; writes the preflight discovery questions the new skill asks its user; and generates the skill and checks it against Forge's rules. It reads the code and never runs it. |
 
-[MANIFEST.md](MANIFEST.md) lists each skill's inputs and outputs.
+Each skill's folder has a `README.md`, its overview for Databricks users: what it's for, what you provide, and what you get. `SKILL.md` is what your coding assistant follows. [MANIFEST.md](MANIFEST.md) lists every skill's inputs and outputs on one page.
 
 `forge-unstructured-doc-extraction` and `forge-structured-doc-extraction` parse with the same shared stage, which handles PDFs over the 500-page `ai_parse_document` limit and scans split into one file per page.
 
@@ -146,7 +148,7 @@ It skips the MLflow skills and the MCP server, because no Forge skill needs them
 
 Invoke `forge` and say what you want built, for example `/forge build a document Q&A agent over /Volumes/main/legal/contracts`. Type just `/forge` to see the use cases. A plain request without `/forge` ("build a chatbot over the PDFs in my volume") should still start in `forge`; the routing evals check that.
 
-`forge` picks the use case from what you want at the end: an agent that answers questions, a search index, or values in tables. If your request could mean more than one, it asks. It tells you which use case it picked, then the use-case skill takes over. If the working directory already has a build in progress, `forge` offers to resume it.
+`forge` picks the use case from what you want at the end: an agent that answers questions, a search index, values in tables, a measure of AI Gateway guardrails, or model services set up with their guardrails and access. If your request could mean more than one, it asks. It tells you which use case it picked, then the use-case skill takes over. If the working directory already has a build in progress, `forge` offers to resume it.
 
 Every use case writes a `README.md` into the working directory and updates it after each module. It covers every Forge use case built in that folder: its architecture, its settings, each module's purpose, outputs, steps, and status, the decisions you can change, and how to resume. Add your own notes in its Notes section, which updates keep. If the folder already has a `README.md` of its own, Forge leaves it alone and writes `FORGE-README.md` instead.
 
@@ -214,6 +216,22 @@ The agent asks before parsing, extracting, re-extracting, starting the OCR clust
 
 The agent asks before creating the model service, attaching its guardrails, and each evaluation run, and keeps the prompts, which are harmful by design, out of its reports. Settings are saved to `guardrail-eval.json`, and the job is `<name>/`.
 
+### Model services and access
+
+> /forge Set up two AI Gateway model services for our POC team, with jailbreak and PII guardrails, and give the data-science group access.
+
+`forge-aig-create-model-service` runs these modules in order:
+
+| # | Module | Result |
+|---|---|---|
+| 00 | Preflight | Your target schema and what to set up (services, guardrails, access), base skills checked, your Unity Catalog privileges checked, your go-ahead |
+| 01 | Template | `model-services.yaml`, `service-policies.yaml`, and `permissions.yaml`, written with every setting explained, which you fill in (or describe, and the agent fills in) |
+| 02 | Check and plan | The files checked against the workspace, your access to everything they name checked, and a read-only plan of every change |
+| 03 | Apply | The services created or updated with their guardrails, SQL policy functions, and only the grants that are missing |
+| 04 | Evaluate | Each service matches its file and answers through the gateway, and each grant is in effect, gated on all three rates ≥ 1.0 |
+
+The agent checks your privileges before it writes anything, waits for you to fill in the files, and asks before it creates, changes, or grants anything. It never revokes access or deletes a service without a separate confirmation that names it. Settings are saved to `aig-model-services.json`, and the YAML files to `ai-gateway/`: edit them and run `/forge` again to update the workspace.
+
 ### Build your own use case
 
 Invoke `forge-smith` with the code that already implements the solution, for example `/forge-smith turn github.com/acme/claims-accelerator into a use-case skill`. The skill it builds deploys its job and training code as Databricks notebooks, which its users can edit in their workspace, and keeps app code as Python modules. It works through six modules, and you approve the design and the questions before it writes anything:
@@ -244,6 +262,7 @@ databricks-skill-forge/
 │   ├── forge-doc-qa-agent/                # same layout
 │   ├── forge-structured-doc-extraction/   # same layout
 │   ├── forge-evaluate-guardrails/         # same layout
+│   ├── forge-aig-create-model-service/    # same layout
 │   └── forge-smith/       # builder: scan.py, scaffold.py, check_skill.py, and templates; turns a codebase into a use-case skill
 ├── docs/                  # maintainer notes; not part of any published skill
 ├── install.sh, install.ps1  # installers (macOS/Linux, Windows): base skills and MCP server through AI Dev Kit, then Forge

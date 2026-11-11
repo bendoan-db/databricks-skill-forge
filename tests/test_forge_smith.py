@@ -79,6 +79,12 @@ def test_frontmatter_and_layout():
         assert body.startswith(f"# {path.name[:2]} · ") and "\n## Verify" in body, path.name
 
 
+def test_overview_lists_every_module():
+    text = (SMITH / "README.md").read_text()
+    for path in sorted((SMITH / "modules").glob("*.md")):
+        assert f"\n| {path.name[:2]} | " in text, f"forge-smith's README.md has no row for {path.name}"
+
+
 @pytest.mark.parametrize("name", ["check_base_skills.py", "write_readme.py"])
 def test_shared_templates_are_the_shared_copies(name: str):
     template = (SMITH / "templates" / name).read_bytes()
@@ -114,6 +120,13 @@ def test_check_skill_catches_problems(tmp_path: Path):
     assert "03-evaluate: Load lines name ['databricks-vector-search']" in problems
     assert "THRESHOLDS and evals/scenarios.yaml defaults.thresholds differ" in problems
     assert "01-ingest-parse.md: needs a ## Verify section" in problems and "smith: marker" in problems
+
+    overview = folder / "README.md"
+    overview.write_text(overview.read_text().replace("| `index_name` | Yes |", "| `index_name` | No |")
+                        .replace("≥ 0.9", "at least 0.9"))
+    problems = "\n".join(check_skill.check(folder))
+    assert "the inputs table needs a row | `index_name` | Yes |" in problems
+    assert "doesn't give doc_hit_rate's threshold, ≥ 0.9" in problems
 
     skill_md = folder / "SKILL.md"
     skill_md.write_text(skill_md.read_text().replace("write_readme.py --state", "write_readme.py --stat"))
@@ -262,6 +275,10 @@ def test_scaffold_writes_a_skill_that_passes_once_filled(skills: Path, tmp_path:
     ingest = (folder / "scripts" / "ingest.py").read_text()  # job code: a Databricks notebook stub
     assert ingest.startswith(check_skill.NOTEBOOK_HEADER) and ingest.rstrip().endswith(check_skill.RUN_CELL)
     assert "# smith: 01-ingest: port notebooks/01_ingest.py" in ingest
+
+    overview = (folder / "README.md").read_text()  # the overview for users: what's settled is filled in
+    assert "| `claims_table` | Yes | — |" in overview and "`precision_at_review` ≥ 0.8" in overview
+    assert "\n| 01 | " in overview and check_skill.overview_problems(overview, ucs, {"precision_at_review": 0.8}) == []
 
     fill(folder)
     assert check_skill.check(folder, skills) == []  # including its own check_base_skills.py against the skills

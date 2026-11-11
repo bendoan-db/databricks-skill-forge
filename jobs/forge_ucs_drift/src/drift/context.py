@@ -67,7 +67,7 @@ def propose(repo: Path, skill: str, impacts: list[dict], assessments: list[dict]
                                              **json.loads(a["assessment_json"] or "{}")} for a in assessments], indent=1))]
     sections += [(f"Diff: {name}", diff or "(no text diff)") for name, diff in diffs.items()]
     sections += [(f"Upstream file at the newer release: {name}", text) for name, text in new_files.items()]
-    files = [skill_dir / "SKILL.md"]
+    files = [skill_dir / "SKILL.md", skill_dir / "README.md"]  # README.md: the skill's overview for users
     if (skill_dir / "ucs.yaml").is_file():
         files.append(skill_dir / "ucs.yaml")
         affected = {m for i in impacts for m in json.loads(i["modules_json"])}

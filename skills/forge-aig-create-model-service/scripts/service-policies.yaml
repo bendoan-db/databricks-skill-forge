@@ -1,0 +1,76 @@
+# Service policies (guardrails) for Unity AI Gateway model services, written by forge-aig-create-model-service.
+# Define each policy once here, then list it by name under a service's service_policies in model-services.yaml.
+# A policy no service lists isn't used. Names: letters, digits, and '_'.
+# The Unity Gateway Service Policies preview must be on (a workspace admin turns it on under Settings > Previews).
+
+# The model service that runs LLM-based checks, unless a policy sets its own evaluator. It's a model service, such
+# as system.ai.gpt-oss-20b, not a model.
+default_evaluator: <default_evaluator>
+
+# type:
+#   block_unsafe_content   built-in. Blocks unsafe or harmful content. Uses an LLM.
+#   block_jailbreak        built-in. Blocks jailbreak and prompt-injection attempts. Input only. Uses an LLM.
+#   block_hallucination    built-in. Blocks hallucinated responses. Output only. Uses an LLM.
+#   detect_sensitive_data  built-in. Blocks or redacts data such as card and Social Security numbers. No LLM.
+#   llm_judge              custom. A rule in plain language, checked by an LLM.
+#   sql                    custom. A fixed rule in SQL, created as a function in model-services.yaml's schema. No LLM.
+#
+# Settings, all optional unless marked:
+#   phases:     [input], [output], or [input, output]. Defaults: block_jailbreak [input], block_hallucination
+#               [output], llm_judge [input], the others both. Output checks wait for the whole response, so a
+#               streamed response arrives all at once. sql policies run on both; check event:type to target one.
+#   mode:       block (the default), or log: record what the policy would decide, without blocking.
+#   evaluator:  the model service for an LLM check. Default: default_evaluator above.
+#   max_turns:  conversation turns an LLM check reads. Default 10.
+#   rank:       evaluation order. Default: the policy's position in a service's list. Lower ranks run first on
+#               input, and LLM checks with the same rank run in parallel.
+#   detect_sensitive_data:
+#     action:      block (the default) or redact.
+#     categories:  required. Any of email_address, ip_address, mac_address, vin, credit_card, iban_code,
+#                  phone_number, us_ssn, us_itin, us_passport, us_bank_number, uk_nhs, uk_nino, in_pan, in_aadhaar.
+#   llm_judge:
+#     instruction: required. What to flag and what to allow. Don't ask for ALLOW or DENY, or an output format.
+#   sql:
+#     sql:         required. An expression returning
+#                  to_variant_object(named_struct('result', 'ALLOW' or 'DENY', 'reason', '...')).
+#                  No ai_query, subqueries, BETWEEN, or aggregates, and COALESCE or CONCAT take two arguments: the
+#                  gateway turns it into CEL. Wrap fields in CAST(COALESCE(event:<path>, '') AS STRING), since a
+#                  comparison on a missing field fails closed. Reference:
+#                  https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/policy-function-reference
+#     description: the function's comment.
+#
+# A check that fails to reach a verdict (for example, an evaluator that times out) denies the request. Use mode: log
+# while you try a policy out.
+
+service_policies:
+  - name: jailbreak_detection
+    type: block_jailbreak
+
+  - name: unsafe_content_detection
+    type: block_unsafe_content
+    phases: [input, output]
+
+  - name: pii_redaction
+    type: detect_sensitive_data
+    action: redact
+    categories: [credit_card, us_ssn, us_bank_number, email_address, phone_number]
+
+  # A custom rule in plain language, logging only while you try it:
+  # - name: block_regulated_advice
+  #   type: llm_judge
+  #   mode: log
+  #   instruction: |
+  #     Flag requests that ask for individualized investment, tax, or legal advice, such as which securities a
+  #     specific person should buy. Don't flag general questions or education about these topics.
+
+  # A custom rule in SQL:
+  # - name: block_confidential_codenames
+  #   type: sql
+  #   description: Deny requests that mention a confidential project codename.
+  #   sql: |
+  #     CASE
+  #       WHEN event:type::string = 'request'
+  #         AND CONTAINS(LOWER(CAST(COALESCE(event:context.message, '') AS STRING)), 'project alpha')
+  #       THEN to_variant_object(named_struct('result', 'DENY', 'reason', 'Mentions a confidential codename.'))
+  #       ELSE to_variant_object(named_struct('result', 'ALLOW'))
+  #     END

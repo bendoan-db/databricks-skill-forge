@@ -8,7 +8,8 @@
 
 Checks the frontmatter, the SKILL.md sections and their order, ucs.yaml against the module text (each module's
 Load lines name exactly its base skills, and so does its Workflow row), module shape, inputs, thresholds, the shared
-check_base_skills.py and write_readme.py (and the Workflow step that writes the project's README), the job tasks
+check_base_skills.py and write_readme.py (and the Workflow step that writes the project's README), README.md (the
+overview for users, which must agree with the inputs, state file, modules, and thresholds), the job tasks
 (each one in scripts/databricks.yml is a notebook_task whose scripts/<file>.py is a Databricks notebook ending in the
 guarded run cell), leftover `smith:` markers, and the folder limits (50 entries, 3 levels, text only, no caches).
 With --skills-dir, it also runs the skill's own check_base_skills.py against those base skills. The Forge repo's tests
@@ -36,6 +37,7 @@ RUN_CELL = ("# As a job's notebook task, the settings arrive as widgets; run as 
             '    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)')
 NOTEBOOK_PATH = re.compile(r"^(?:\.\./)?src/([\w.-]+\.py)$")
 SHARED = ("scripts/check_base_skills.py", "scripts/write_readme.py")  # identical to templates/; listed under `shared`
+OVERVIEW_SECTIONS = ["What it's for", "What you provide", "What you get", "How it works"]
 
 
 def frontmatter(text: str) -> dict:
@@ -52,7 +54,7 @@ def thresholds(evaluate: Path) -> dict | None:
 
 def check(folder: Path, skills_dir: Path | None = None) -> list[str]:
     problems = []
-    for rel in ("SKILL.md", "ucs.yaml", "evals/scenarios.yaml", *SHARED, "scripts/evaluate.py"):
+    for rel in ("SKILL.md", "README.md", "ucs.yaml", "evals/scenarios.yaml", *SHARED, "scripts/evaluate.py"):
         if not (folder / rel).is_file():
             problems.append(f"{rel} is missing")
     if problems:
@@ -143,6 +145,9 @@ def check(folder: Path, skills_dir: Path | None = None) -> list[str]:
     elif floors != (scenarios.get("defaults") or {}).get("thresholds"):
         problems.append("scripts/evaluate.py THRESHOLDS and evals/scenarios.yaml defaults.thresholds differ")
 
+    # README.md, the overview for users: its inputs, state file, modules, and thresholds agree with the skill
+    problems += overview_problems((folder / "README.md").read_text(), ucs, floors or {})
+
     # Job and training code: notebook tasks running Databricks notebooks
     problems += job_task_problems(folder)
 
@@ -226,6 +231,31 @@ def job_task_problems(folder: Path) -> list[str]:
         if not render.is_file() or "def copy_edited" not in render.read_text() or "kept_edited" not in render.read_text():
             problems.append("job notebooks: scripts/render.py must keep copies the user edited (copy_edited, "
                             "kept_edited; templates/render.py)")
+    return problems
+
+
+def overview_problems(text: str, ucs: dict, floors: dict) -> list[str]:
+    """README.md: the four sections in order, every input in its table (Required Yes or No), the state file, a row per
+    module, and each threshold as `≥ value`."""
+    problems = []
+    headings = [line[3:].strip() for line in text.splitlines() if line.startswith("## ")]
+    if [h for h in headings if h in OVERVIEW_SECTIONS] != OVERVIEW_SECTIONS:
+        problems.append(f"README.md sections must be, in order: {', '.join(OVERVIEW_SECTIONS)}")
+    provide, get, how = (section(text, s) for s in OVERVIEW_SECTIONS[1:])
+    inputs = ucs.get("inputs") or {}
+    for kind, names in (("Yes", inputs.get("required") or []), ("No", inputs.get("optional") or [])):
+        for name in names:
+            if f"| `{name}` | {kind} |" not in provide:
+                problems.append(f"README.md What you provide: the inputs table needs a row | `{name}` | {kind} |")
+    state_file = (ucs.get("catalog") or {}).get("state_file")
+    if state_file and state_file not in get:
+        problems.append(f"README.md What you get never names the state file {state_file}")
+    for module in ucs.get("modules") or []:
+        if f"\n| {str(module.get('id', ''))[:2]} | " not in how:
+            problems.append(f"README.md How it works has no row for module {module.get('id')}")
+    for metric, floor in floors.items():
+        if f"≥ {floor}" not in get:
+            problems.append(f"README.md What you get doesn't give {metric}'s threshold, ≥ {floor}")
     return problems
 
 

@@ -6,17 +6,17 @@
 
     uv run <smith>/scripts/scaffold.py --state <workdir>/smith.json [--skills-dir <dir>] [--out <dir>]
 
-Writes <out>/<name>/ (default <out>: the skills folder holding forge-smith): SKILL.md, modules/, ucs.yaml,
-evals/scenarios.yaml, scripts/check_base_skills.py, scripts/write_readme.py (which writes the README of each project the
-skill builds), scripts/evaluate.py, and a stub for every other script a module lists. Job and training code stubs are Databricks notebooks (templates/notebook.py), a scripts/databricks.yml
-stub runs them as notebook tasks, and scripts/render.py (templates/render.py) copies them into the bundle, keeping
-copies the user edited in the workspace; the module that deploys the job says how to keep such an edit. App code
-stubs (a module's `app_scripts`) stay Python modules. Everything the
-blueprint settles is filled in: frontmatter, the Inputs table, module 00's
-discovery questions, checks, permissions, and cost list, each module's Load lines (one per base skill), the
-Workflow table, ucs.yaml with the installed base-skill versions, and the thresholds. What only the agent can
-write is left as a `smith:` marker; check_skill.py fails until none are left. Refuses to write into an existing
-folder. The blueprint format is in references/blueprint.md.
+Writes <out>/<name>/ (default <out>: the skills folder holding forge-smith): SKILL.md, README.md (its overview for
+users), modules/, ucs.yaml, evals/scenarios.yaml, scripts/check_base_skills.py, scripts/write_readme.py (which writes
+the README of each project the skill builds), scripts/evaluate.py, and a stub for every other script a module lists.
+Job and training code stubs are Databricks notebooks (templates/notebook.py), a scripts/databricks.yml stub runs them
+as notebook tasks, and scripts/render.py (templates/render.py) copies them into the bundle, keeping copies the user
+edited in the workspace; the module that deploys the job says how to keep such an edit. App code stubs (a module's
+`app_scripts`) stay Python modules. Everything the blueprint settles is filled in: frontmatter, the Inputs table, module
+00's discovery questions, checks, permissions, and cost list, each module's Load lines (one per base skill), the
+Workflow table, the overview's inputs, steps, and thresholds, ucs.yaml with the installed base-skill versions, and the
+thresholds. What only the agent can write is left as a `smith:` marker; check_skill.py fails until none are left.
+Refuses to write into an existing folder. The blueprint format is in references/blueprint.md.
 """
 
 import argparse
@@ -299,6 +299,85 @@ def skill_md(bp: dict) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def overview_md(bp: dict) -> str:
+    """README.md, the skill's overview for Databricks users: what it's for, what they provide, what they get."""
+    state, catalog = bp["state_file"], bp["catalog"]
+    required, optional = bp["inputs"]["required"], bp["inputs"].get("optional") or []
+    if "profile" not in {i["name"] for i in required + optional}:
+        optional = [{"name": "profile", "default": "your CLI profile", "notes": "The CLI profile every command uses"},
+                    *optional]
+    start = ("It's a Forge use case. Start it with `/forge` (`@forge` in Genie Code) and say what you want, or name "
+             "the skill." if bp.get("routed") else
+             "Start it by naming the skill: `forge` doesn't route to it unless it joins Forge's catalog.")
+    floors = ", ".join(f"`{k}` ≥ {v}" for k, v in bp["thresholds"].items())
+    billable = bp.get("billable") or [MARK.format("each billable or shared action")]
+    return "\n".join([
+        f"# {bp['title']} (`{bp['name']}`)",
+        "",
+        bp["summary"].strip(),
+        "",
+        start + " Your coding assistant works through it step by step, and asks before anything that costs money.",
+        "",
+        "## What it's for",
+        "",
+        f"- **Choose it for** {catalog['choose_when']}.",
+        f"- **Not for** {catalog['not_for']}.",
+        "",
+        "## What you provide",
+        "",
+        "**Before you start:**",
+        "- " + MARK.format("the workspace features, tools, and privileges a user needs, in plain words"),
+        "",
+        "**What it asks you.** It asks for the required inputs before anything else, and proposes defaults for the "
+        "rest.",
+        "",
+        "| Input | Required | Default | What it is |",
+        "|---|---|---|---|",
+        *(f"| `{i['name']}` | Yes | — | {cell(i.get('notes') or i['ask'])} |" for i in required),
+        *(f"| `{i['name']}` | No | {cell(i.get('default', '—'))} | {cell(i.get('notes', ''))} |" for i in optional),
+        "",
+        "## What you get",
+        "",
+        "**In your workspace:**",
+        "- " + MARK.format("each table, job, endpoint, app, or model the skill creates, with its name"),
+        "",
+        "**In your working directory:**",
+        "",
+        "```",
+        "<workdir>/",
+        f"├── {'README.md'.ljust(max(len(state), 9) + 2)}# what was built, its settings, and each step's "
+        "status",
+        f"├── {state.ljust(max(len(state), 9) + 2)}# the settings",
+        "└── " + MARK.format("what the modules create in the working directory"),
+        "```",
+        "",
+        f"**When it's done.** The evaluation meets its thresholds: {floors}. "
+        + MARK.format("what each threshold measures, in plain words"),
+        "",
+        "## How it works",
+        "",
+        "| # | Step | What happens |",
+        "|---|---|---|",
+        "| 00 | Preflight | Asks for the required inputs, checks the tools and your privileges, and gets your "
+        "go-ahead on cost |",
+        *(f"| {m['id'][:2]} | {cell(m['title'])} | {cell(m['produces'])} |" for m in bp["modules"][1:]),
+        "",
+        "Each step ends with a check that must pass before the next one starts.",
+        "",
+        "## Before it acts",
+        "",
+        "It asks before: " + "; ".join(billable) + ". It never deletes anything without a separate confirmation that "
+        "names it, and grants access only to the people you name.",
+        "",
+        "## Running it",
+        "",
+        "> " + MARK.format("an example request"),
+        "",
+        f"Its progress is saved in `{state}`. Run it again in the same folder later to pick up where it stopped.",
+        "",
+    ])
 
 
 def evaluate_module(bp: dict) -> dict:
@@ -616,7 +695,8 @@ def scaffold(bp: dict, skills_dir: Path, out: Path) -> Path:
     folder = out / bp["name"]
     if folder.exists():
         raise BlueprintError(f"{folder} already exists. Edit it by hand, or move it aside to scaffold again.")
-    files = {"SKILL.md": skill_md(bp), "ucs.yaml": ucs_yaml(bp, skills_dir), "evals/scenarios.yaml": scenarios_yaml(bp),
+    files = {"SKILL.md": skill_md(bp), "README.md": overview_md(bp), "ucs.yaml": ucs_yaml(bp, skills_dir),
+             "evals/scenarios.yaml": scenarios_yaml(bp),
              "scripts/evaluate.py": evaluate_py(bp)}
     for module in bp["modules"]:
         files[f"modules/{module['id']}.md"] = preflight_md(bp) if module["id"] == "00-preflight" else module_md(bp, module)

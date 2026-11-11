@@ -1,0 +1,29 @@
+# Who can use which Unity AI Gateway model services, written by forge-aig-create-model-service.
+# Fill in each <...> value, then tell your coding assistant you're done. It checks this file, shows you the grants it
+# would add, and asks before it grants anything. It only adds access: taking an entry out revokes nothing.
+#
+# groups:  account-level groups. A workspace-local group can't receive Unity Catalog grants.
+# users:   users' emails, or service principals' application IDs (for apps and jobs).
+#
+# Each entry:
+#   name:            the group's name, the user's email, or the service principal's application ID.
+#   model_services:  three-part names, catalog.schema.service. A service from model-services.yaml, or any service you
+#                    can grant on.
+#   privileges:      optional, for every service in the entry. Default [EXECUTE].
+#     EXECUTE         query the service. Most people need only this.
+#     READ_METADATA   see its settings and permissions without querying it.
+#     APPLY_TAG       add and edit its tags.
+#     MANAGE          change or delete it, and control who can use it. Only for the people who run it.
+#     ALL_PRIVILEGES  every privilege except MANAGE and READ_METADATA.
+#   Names can be written with a space too, such as READ METADATA.
+# Everyone listed also gets USE CATALOG and USE SCHEMA on each service's catalog and schema, which querying needs.
+
+groups:
+  - name: <account group>
+    model_services:
+      - <catalog>.<schema>.<service name>
+    privileges: [EXECUTE]
+
+users: []
+  # - name: first.last@example.com
+  #   model_services: [<catalog>.<schema>.<service name>]

@@ -1,0 +1,78 @@
+# Model services for Unity AI Gateway, written by forge-aig-create-model-service.
+# Fill in each <...> value, then tell your coding assistant you're done. It checks this file, shows you what it would
+# create or change, and asks before it does anything. Running it again updates each service to match this file.
+# Guardrails are defined in service-policies.yaml, and who can use the services in permissions.yaml.
+
+# Unity Catalog location for every model service below, its inference table, and its SQL service policies.
+catalog: <catalog>
+schema: <schema>
+
+# Default rate limit for services with enable_rate_limits: true, applied to each user separately.
+# A service can set its own rate_limits instead. 0 denies every request.
+rate_limits:
+  requests_per_minute: 60
+  tokens_per_minute: 100000
+
+model_services:
+  # name:          letters, digits, '-' and '_'. The service is <catalog>.<schema>.<name>.
+  # description:   what it's for, and who uses it.
+  # destinations:  the models that receive traffic. With more than one (up to 10), set traffic_percentage on each,
+  #                adding up to 100.
+  # fallbacks:     optional. Models tried in order when a destination fails.
+  #   Each destination and fallback has a provider and a destination:
+  #     databricks              a Unity Catalog model, such as system.ai.databricks-claude-sonnet-5-5. It's the
+  #                             model, not its model service: most system.ai models start with databricks-, and
+  #                             their services don't (system.ai.gpt-oss-120b is both).
+  #     provisioned_throughput  a Model Serving endpoint's name.
+  #     external                a model provider service (catalog.schema.service). Also set external_model, the
+  #                             provider's model name. Create the model provider service first.
+  # enable_inference_table: logs requests and responses to <catalog>.<schema>.<name>_payload. Its location can't
+  #                change once it's created, and creating a service fails if that table already exists.
+  # enable_rate_limits: applies rate_limits: the service's own, or the default above.
+  # rate_limits:   optional, this service's own requests_per_minute and tokens_per_minute.
+  # service_policies: optional. Policy names from service-policies.yaml, run in the order listed.
+  #
+  # Running again replaces a service's description, destinations, fallbacks, rate limits, inference table, and
+  # service policies with what's here; taking a policy out of its list detaches it. Nothing is ever deleted.
+
+  - name: <service name>
+    description: <what it's for and who uses it>
+    destinations:
+      - provider: databricks
+        destination: system.ai.databricks-claude-sonnet-5-5
+    fallbacks:
+      - provider: databricks
+        destination: system.ai.gpt-oss-120b
+    enable_inference_table: true
+    enable_rate_limits: true
+    service_policies: <starter_policies>
+
+  # Another service, splitting traffic between two models, with its own rate limit:
+  # - name: <service name>
+  #   description: <what it's for and who uses it>
+  #   destinations:
+  #     - provider: databricks
+  #       destination: system.ai.databricks-claude-opus-5-5
+  #       traffic_percentage: 70
+  #     - provider: databricks
+  #       destination: system.ai.databricks-claude-sonnet-5-5
+  #       traffic_percentage: 30
+  #   enable_inference_table: true
+  #   enable_rate_limits: true
+  #   rate_limits:
+  #     requests_per_minute: 120
+  #     tokens_per_minute: 200000
+  #   service_policies: [jailbreak_detection, unsafe_content_detection]
+
+  # An external model, through a model provider service you've already created:
+  # - name: <service name>
+  #   description: <what it's for and who uses it>
+  #   destinations:
+  #     - provider: external
+  #       destination: <catalog>.<schema>.<model provider service>
+  #       external_model: <the provider's model name>
+  #   fallbacks:
+  #     - provider: databricks
+  #       destination: system.ai.gpt-oss-120b
+  #   enable_inference_table: true
+  #   enable_rate_limits: true

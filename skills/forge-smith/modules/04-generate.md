@@ -15,6 +15,7 @@ uv run <smith>/scripts/scaffold.py --state <workdir>/smith.json --skills-dir <ou
 
 It writes `<out>/<name>/` and reports how many `smith:` markers are left to fill. It fills in everything the blueprint settles:
 - the frontmatter, and the Inputs, Guardrails, Workflow, and Decision points sections;
+- `README.md`, the overview for users: what it's for, the inputs table, the steps, and the thresholds;
 - module 00, whole: its questions, checks, permissions, cost list, and state file;
 - each module's heading and Load lines, and, in the module that deploys the job, its "Editing the job's notebooks" section;
 - `render.py`, from `templates/render.py`: it renders the bundle and copies the job's notebooks, keeping the ones a user edited;
@@ -49,6 +50,7 @@ Keep each module short. Don't restate what a base skill covers: the Load line is
 
 ## 4. The rest
 
+- **README.md:** the overview's prose: what a user needs before they start, each resource the skill creates, what each threshold means, and an example request. Write it for a Databricks user who won't read SKILL.md ([references/anatomy.md](../references/anatomy.md), README.md).
 - **SKILL.md:** the Reference architecture diagram, the working-directory tree (what the modules create there), and anything missing from Done when. `write_readme.py` copies these, and each module's purpose and sections, into the project's README, so write them for the person who opens the project later, too.
 - **`evals/scenarios.yaml`:** one scenario, from the source's example data or a public dataset, with values for the required inputs, its checks, and the teardown list.
 - **Other markers:** run `grep -rn "smith:" <out>/<name>` and fill in whatever it finds.

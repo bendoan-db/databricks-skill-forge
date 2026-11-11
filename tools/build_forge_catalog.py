@@ -79,7 +79,7 @@ def render_manifest(skills_dir: Path = SKILLS_DIR) -> str:
     router = forge.get("manifest") or {}
     if missing := [key for key in ("title", "inputs", "produces") if not router.get(key)]:
         raise SystemExit(f"skills/forge/forge.yaml manifest is missing {missing}")
-    rows = [(f"[`forge`](skills/forge/SKILL.md)<br>{cell(router['title'])}", description(skills_dir / "forge"),
+    rows = [(f"[`forge`](skills/forge/README.md)<br>{cell(router['title'])}", description(skills_dir / "forge"),
              cell(router["inputs"]), cell(router["produces"]))]
     for entry, ucs in pairs:
         inputs = ucs.get("inputs") or {}
@@ -87,7 +87,7 @@ def render_manifest(skills_dir: Path = SKILLS_DIR) -> str:
         given += [f"**Builds on:** `{dep['name']}`, which it runs first if needed" for dep in ucs.get("requires") or []]
         given += [f"**Optional:** {names(inputs.get('optional') or [])}"]
         c = ucs["catalog"]
-        rows.append((f"[`{entry['name']}`](skills/{entry['name']}/SKILL.md)<br>{cell(c['title'])}",
+        rows.append((f"[`{entry['name']}`](skills/{entry['name']}/README.md)<br>{cell(c['title'])}",
                      description(skills_dir / entry["name"]), "<br>".join(given),
                      f"{cell(c['produces'])}<br>**State file:** `{c['state_file']}`"))
     lines = [

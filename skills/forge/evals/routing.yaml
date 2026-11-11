@@ -90,6 +90,23 @@ cases:
   - prompt: "/forge guardrail evaluation"
     expect: {handoff: forge-evaluate-guardrails}
 
+  # Model services and access: setting up guardrails is this one, measuring them is forge-evaluate-guardrails
+  - prompt: "/forge Create a model service in AI Gateway that routes to Claude Sonnet, falls back to GPT OSS, and has per-user rate limits"
+    expect: {handoff: forge-aig-create-model-service}
+  - prompt: "/forge Put jailbreak and PII guardrails on our AI Gateway model services and give the data-science group access"
+    expect: {handoff: forge-aig-create-model-service}
+  - prompt: "/forge Grant the analysts group and our app's service principal access to the model services in main.ai_gateway"
+    expect: {handoff: forge-aig-create-model-service}
+  - prompt: "/forge Add a custom guardrail to our model service that blocks prompts mentioning project codenames"
+    expect: {handoff: forge-aig-create-model-service}
+  - prompt: "/forge Give me YAML templates to set up Unity AI Gateway model services, service policies, and permissions for our POC"
+    expect: {handoff: forge-aig-create-model-service}
+  - prompt: "/forge model services and access"
+    expect: {handoff: forge-aig-create-model-service}
+  - prompt: "/forge let's keep going"
+    workdir_files: [aig-model-services.json]
+    expect: {handoff: forge-aig-create-model-service, resume: true}
+
   # No use case: point to a base skill
   - prompt: "/forge Create a vector search index on main.sales.products for semantic product search"
     expect: {point_to: databricks-vector-search}
@@ -101,7 +118,7 @@ cases:
     expect: {point_to: databricks-ml-training}
   - prompt: "/forge Build a sales dashboard on main.sales.orders"
     expect: {point_to: databricks-aibi-dashboards}
-  - prompt: "/forge Add rate limits and a budget to our model service in AI Gateway"
+  - prompt: "/forge Set a monthly spend budget with an alert for our AI Gateway usage"
     expect: {point_to: databricks-unity-gateway}
   - prompt: "/forge Turn the notebooks in github.com/acme/claims-accelerator into a Forge use-case skill"
     expect: {point_to: forge-smith}

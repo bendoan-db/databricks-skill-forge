@@ -1,0 +1,154 @@
+# Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
+# and scripts/check_base_skills.py reads base_skills at runtime.
+name: forge-aig-create-model-service
+version: 0.1.0
+owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
+dbs_release: dbs-2026.11                    # Forge base release; not published yet, so `upstream` is the working pin
+upstream: databricks/databricks-agent-skills@v0.2.45   # written against this tag (2026-11-10); not yet certified in a workspace
+upstream_min: v0.2.27                       # oldest tag with every cited base skill and reference file
+source:
+  repo: https://github.com/bendoan-db/unity-ai-gateway-utilities
+  commit: 817b0b7
+  ported: the three YAML files, deploy_model_service (routing, fallbacks, rate limits, inference tables, service policies, SQL policy functions), grant_permissions, and the config checks from its uaig-test-utilities skill   # not the notebooks' run-from-the-UI path, or dry_run.py
+inputs:
+  required: [target_schema, parts]          # module 00 step 1 asks for both
+  optional: [profile, config_dir, default_evaluator, warehouse_id, test_prompt]
+shared:                                     # identical in every skill that carries them; tests/test_skills.py checks
+  - scripts/check_base_skills.py
+  - scripts/write_readme.py
+
+catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
+  title: Model services and access
+  choose_when: creating or changing Unity AI Gateway model services (routing, traffic splits, fallbacks, rate limits, inference tables), putting guardrails (service policies, built-in or custom LLM-judge and SQL rules) on them, or granting groups, users, and service principals access to model services, from YAML templates the user fills in
+  not_for: measuring how well guardrails block unsafe prompts (forge-evaluate-guardrails); a document Q&A agent (forge-doc-qa-agent)
+  produces: YAML templates the user fills in, then the model services they describe, with routing, fallbacks, rate limits, inference tables, and service policies, access granted to the groups and users listed, and a check that each service matches, answers, and has its grants in effect
+  state_file: aig-model-services.json       # forge offers to resume this skill when the file is in <workdir>
+  next: []
+
+modules:
+  - id: 00-preflight
+    file: modules/00-preflight.md
+    scripts: [scripts/check_base_skills.py, scripts/check_access.py]
+    base_skills:
+      - name: databricks-core
+        version: 0.1.0
+        uses: [profile selection, auth, warehouse discovery]
+      - name: databricks-unity-gateway
+        version: 0.1.0
+        uses: [creation and management privileges, account-level groups]
+      - name: databricks-unity-catalog
+        version: 0.3.0
+        uses: [privileges, ownership, and inheritance]
+
+  - id: 01-template
+    file: modules/01-template.md
+    scripts: [scripts/render.py, scripts/model-services.yaml, scripts/service-policies.yaml, scripts/permissions.yaml]
+    base_skills:
+      - name: databricks-unity-gateway
+        version: 0.1.0
+        uses: [destination types, fallbacks, rate limits, inference tables, account-level groups]
+
+  - id: 02-plan
+    file: modules/02-plan.md
+    scripts: [scripts/deploy_services.py, scripts/grant_access.py, scripts/check_access.py]
+    base_skills:
+      - name: databricks-unity-gateway
+        version: 0.1.0
+        uses: [model provider services, creation and management privileges]
+
+  - id: 03-apply
+    file: modules/03-apply.md
+    scripts: [scripts/deploy_services.py, scripts/grant_access.py]
+    base_skills:
+      - name: databricks-unity-gateway
+        version: 0.1.0
+        uses: [revoking access, deleting a model service]
+
+  - id: 04-evaluate
+    file: modules/04-evaluate.md
+    scripts: [scripts/evaluate.py]
+    base_skills:
+      - name: databricks-unity-gateway
+        version: 0.1.0
+        uses: [querying a model service, effective permissions]
+
+# Capabilities this skill needs but the pinned base release doesn't cover, or covers with stale facts.
+# SKILL.md "Base-skill guidance to override" holds the runtime instructions for each entry.
+# Drafts of the upstream change proposals: docs/evaluate-guardrails-upstream-proposals.md (1-2) and
+# docs/aig-create-model-service-upstream-proposals.md (3-4). After filing one, add `upstream_issue: <url>`.
+coverage_gaps:
+  - capability: Service policies (guardrails) on model services, and attaching them by API
+    modules: [01-template, 02-plan, 03-apply]
+    kind: missing
+    evidence:
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/
+        date_modified: 2026-10-29
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/create-service-policy
+        date_modified: 2026-10-29
+    stale_base_guidance: databricks-unity-gateway says to manage services with the typed CLI, which drops config.service_policies
+  - capability: Custom service policies (LLM judges, and SQL policy functions transpiled to CEL)
+    modules: [01-template, 02-plan, 03-apply]
+    kind: missing
+    evidence:
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/policy-function-reference
+        date_modified: null                  # fill on the next ingest cycle
+  - capability: system.ai destinations are Unity Catalog models (system.ai.databricks-*), not the model services of the same model
+    modules: [01-template, 02-plan]
+    kind: missing
+    evidence: []                             # from the source (unity-ai-gateway-utilities, 2026-11): a model service's name as a destination fails; confirm in a workspace
+  - capability: Reading a model service's service policies, which the typed CLI leaves out
+    modules: [02-plan, 04-evaluate]
+    kind: missing
+    evidence: []                             # observed with CLI 1.18.0 (forge-evaluate-guardrails, 2026-10-01); recheck on newer CLIs
+
+# Platform facts this skill hard-codes. The refiner re-checks them like coverage_gaps; when one changes,
+# update every file in used_in.
+facts:
+  - fact: Creating a model service needs USE CATALOG, USE SCHEMA, and CREATE SERVICE; an inference table needs CREATE TABLE; each destination needs EXECUTE; updating a service or managing its grants needs ownership or MANAGE
+    used_in: [scripts/check_access.py, modules/00-preflight.md, SKILL.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/ai-gateway/create-model-services
+        checked: 2026-11-10
+  - fact: Querying a model service needs EXECUTE on it and USE CATALOG and USE SCHEMA on its parents; Model Serving CAN_QUERY doesn't grant it
+    used_in: [scripts/grant_access.py, scripts/permissions.yaml, modules/04-evaluate.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/ai-gateway/create-model-services
+        checked: 2026-11-10
+  - fact: An inference table is <prefix>_payload, its location can't change after it's created, and creating a service fails if the table already exists
+    used_in: [scripts/deploy_services.py, scripts/model-services.yaml]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/ai-gateway/create-model-services
+        checked: 2026-11-10
+  - fact: A model service routes to at most 10 primary destinations, whose traffic_percentage values add up to 100
+    used_in: [scripts/deploy_services.py, scripts/model-services.yaml]
+    evidence: []                             # databricks-unity-gateway references/model-services.md (v0.2.45); confirm on docs/ai-gateway/configure-traffic-splitting
+  - fact: The built-in policies are system.ai.block_unsafe_content, block_jailbreak (input only), block_hallucination (output only), and detect_sensitive_data (15 categories, block or redact); custom LLM judges use system.ai.invoke_llm_judge
+    used_in: [scripts/deploy_services.py, scripts/service-policies.yaml]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/
+        checked: 2026-11-02                  # by forge-evaluate-guardrails; invoke_llm_judge and the option names are from the source
+  - fact: SQL policies can't use ai_query, subqueries, BETWEEN, or aggregates, or COALESCE or CONCAT with more than two arguments
+    kind: heuristic                          # the source's findings ("cannot be transpiled to CEL"); the function reference lists what's supported
+    used_in: [scripts/deploy_services.py, scripts/service-policies.yaml]
+    evidence: []
+  - fact: The default policy evaluator is the model service system.ai.gpt-oss-20b
+    kind: heuristic                          # the source's default; the docs don't name one
+    used_in: [scripts/render.py, scripts/service-policies.yaml, SKILL.md, modules/00-preflight.md]
+    evidence: []
+  - fact: The starter service routes to Claude Sonnet 5.5's model, system.ai.databricks-claude-sonnet-5-5, with system.ai.gpt-oss-120b as its fallback
+    used_in: [scripts/model-services.yaml, modules/01-template.md]
+    evidence: []                             # the source's table of system.ai models and services; confirm in a workspace with `databricks registered-models get`
+  - fact: Policy changes take a minute or two to take effect, and grants a few minutes
+    used_in: [modules/04-evaluate.md, scripts/evaluate.py]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/create-service-policy
+        checked: 2026-11-02                  # by forge-evaluate-guardrails; grants: databricks-unity-gateway references/permissions.md
+  - fact: ai_query supports only system.ai model services, not model services you create
+    used_in: [modules/04-evaluate.md]
+    evidence: []                             # databricks-unity-gateway references/querying.md (v0.2.45), citing docs/ai-gateway/query-model-services
+  - fact: Every check passes at a rate of 1.0
+    kind: heuristic                          # a setup either matches, answers, and is granted, or it isn't
+    used_in: [scripts/evaluate.py, modules/04-evaluate.md, SKILL.md, evals/scenarios.yaml]
+    evidence: []
+
+scenarios: evals/scenarios.yaml
