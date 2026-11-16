@@ -6,8 +6,8 @@
 # a notebook installs what it needs beyond the default serverless environment in its %pip cell. Lines between
 # "# >>> <block>" and "# <<< <block>" are optional: render.py drops the localize blocks unless localize is
 # on, swaps the trigger block for a schedule when schedule_cron is set, keeps review_queue once the review
-# queue's synced table exists (review.sync_pipeline_id), and keeps review_sync once Lakehouse Sync writes the
-# decisions' history table (review.history_ready).
+# queue's synced table exists (review.sync_pipeline_id), keeps review_sync once Lakehouse Sync writes the
+# decisions' history table (review.history_ready), and keeps profile only locally.
 bundle:
   name: <bundle_name>
 
@@ -161,5 +161,8 @@ targets:
   # No `mode: development`: development mode forces triggers to PAUSED, and this job exists to react to new files.
   default:
     default: true
+    # >>> profile
+    # Locally, the CLI profile. In a notebook (runtime workspace) render.py leaves this out, and job.py deploys.
     workspace:
       profile: <profile>
+    # <<< profile

@@ -52,11 +52,11 @@ interface ReviewField {
 }
 
 class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
+  readonly status: number; // a field, not a parameter property: the scaffold's tsconfig sets erasableSyntaxOnly
+
+  constructor(message: string, status: number) {
     super(message);
+    this.status = status;
   }
 }
 

@@ -16,7 +16,13 @@ workspace and exported back into src/) is kept and listed under kept_edited; --f
 the skill's version. Prints a JSON summary.
 
 With review_app on (module 07) and the app scaffolded in <workdir>/<review.app_name>/, it also copies the
-review app's server and client files there and sets the app's table names in its app.yaml.
+review app's server and client files there and sets the app's table names in its app.yaml. In a notebook (runtime
+workspace), where `databricks apps init` can't run, it writes the AppKit project itself, from
+scripts/review-app/scaffold.yaml, once review.project, branch, and database are recorded: each scaffold file only
+when it's missing, so edits are kept. It also renders the app's README.md, how to deploy it from the workspace.
+
+`runtime` is where the skill runs, recorded once in module 00. Locally the bundle's target names the CLI profile; in a
+notebook it names none, since job.py deploys the job as the notebook's user.
 """
 
 import argparse
@@ -60,6 +66,23 @@ APP_HEADER_RE = re.compile(r"^// Copied by forge-structured-doc-extraction rende
 COPY_MARK = ("{comment} Copied from " + SKILL + " by render.py (sha256:{digest}). Edits are kept when you render "
              "again; render.py --force replaces them.")
 COPY_MARK_RE = re.compile(r"^(?:#|--) Copied from [\w-]+ by render\.py \(sha256:([0-9a-f]{12})\)")
+SCAFFOLD = SCRIPTS / "review-app" / "scaffold.yaml"  # the AppKit project, for a notebook (module 07)
+DEPLOY_README = SCRIPTS / "review-app" / "deploy.md"  # how to deploy it, rendered into the app's folder
+MD_HEADER = ("<!-- Rendered by forge-structured-doc-extraction render.py from extraction.json (sha256:{digest}). "
+             "Change extraction.json and re-render. -->")
+MD_HEADER_RE = re.compile(r"^<!-- Rendered by forge-structured-doc-extraction render\.py .*\(sha256:([0-9a-f]{12})\)")
+FILL_RE = re.compile(r"\{\{([a-z_]+)\}\}")
+RUNTIMES = ("local", "workspace")
+
+
+def runtime_errors(state: dict) -> list[str]:
+    """Problems with where the skill runs: `local`, with a CLI profile, or `workspace`, Genie Code in a notebook."""
+    runtime = state.get("runtime", "local")
+    if runtime not in RUNTIMES:
+        return [f"runtime={runtime!r}: local or workspace (module 00)"]
+    if runtime == "local" and not state.get("profile"):
+        return ["profile is missing or empty: locally, every command uses the CLI profile"]
+    return []
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,8 +97,9 @@ def load_state(path: Path) -> dict:
     if not path.is_file():
         raise SystemExit(f"{path} not found. Module 00 writes it; run preflight first.")
     state = json.loads(path.read_text())
-    errors = [f"{key} is missing or empty" for key in ("profile", "volume_path", "catalog", "schema", "prefix", "name")
-              if not state.get(key)]
+    errors = runtime_errors(state) + [f"{key} is missing or empty"
+                                      for key in ("volume_path", "catalog", "schema", "prefix", "name")
+                                      if not state.get(key)]
     for key in ("catalog", "schema", "prefix"):
         if state.get(key) and not NAME_RE.match(str(state[key])):
             errors.append(f"{key}={state[key]!r}: use letters, digits, '_' or '-'")
@@ -169,6 +193,10 @@ def config_json(config: dict) -> str:
 
 def edited_by_hand(path: Path) -> bool:
     text = path.read_text()
+    if path.suffix == ".md":  # the review app's README
+        first, _, rest = text.partition("\n")
+        match = MD_HEADER_RE.match(first)
+        return not match or digest(rest) != match.group(1)
     if path.suffix in (".ts", ".tsx"):  # a review app file: the scaffold's own (no header) is replaced
         first, _, rest = text.partition("\n")
         match = APP_HEADER_RE.match(first)
@@ -223,8 +251,10 @@ def render_bundle(state: dict) -> str:
         "description_element_types": state.get("description_element_types", "*"),
         "page_images_path": state.get("page_images_path", ""),
         "split_pages": "folder" if state.get("split_pages") is True else "none",
-        "profile": state["profile"],
     }
+    local = state.get("runtime", "local") == "local"
+    if local:  # in a notebook the target names no profile
+        values["profile"] = state["profile"]
     if localize:
         values["ocr_spark_version"] = state["ocr_cluster"]["spark_version"]
         values["ocr_node_type"] = state["ocr_cluster"]["node_type_id"]
@@ -247,6 +277,8 @@ def render_bundle(state: dict) -> str:
             return content if queue else ""
         if name == "review_sync":
             return content if review_sync else ""
+        if name == "profile":
+            return content if local else ""
         if name == "trigger" and cron:
             return (
                 "      schedule:\n"
@@ -259,9 +291,9 @@ def render_bundle(state: dict) -> str:
         return content
 
     body = BLOCK_RE.sub(block, body)
-    if found != {"localize", "trigger", "review_queue", "review_sync"}:
-        raise SystemExit("databricks.yml template changed: expected localize, trigger, review_queue, and review_sync "
-                         f"blocks, found {sorted(found)}")
+    if found != {"localize", "trigger", "review_queue", "review_sync", "profile"}:
+        raise SystemExit("databricks.yml template changed: expected localize, trigger, review_queue, review_sync, and "
+                         f"profile blocks, found {sorted(found)}")
     used = set()
 
     def fill(match: re.Match) -> str:
@@ -277,7 +309,11 @@ def render_bundle(state: dict) -> str:
 
     parsed = yaml.safe_load(body)
     got = {key: spec.get("default") for key, spec in parsed["variables"].items()}
-    got.update(bundle_name=parsed["bundle"]["name"], profile=parsed["targets"]["default"]["workspace"]["profile"])
+    target = parsed["targets"]["default"]
+    got.update(bundle_name=parsed["bundle"]["name"], profile=(target.get("workspace") or {}).get("profile"))
+    if not local and "workspace" in target:
+        raise SystemExit("Rendered databricks.yml names a workspace for its target, which a notebook's deploy "
+                         "doesn't use")
     job = parsed["resources"]["jobs"]["doc_extraction"]
     clusters = {c["job_cluster_key"]: c["new_cluster"] for c in job.get("job_clusters", [])}
     if localize:
@@ -303,28 +339,67 @@ def render_bundle(state: dict) -> str:
     return body
 
 
-def app_yaml(path: Path, env: dict[str, str]) -> str:
+def app_yaml(text: str, env: dict[str, str]) -> str:
     """The scaffolded app.yaml with the review app's settings in its env list; other entries are kept."""
-    data = yaml.safe_load(path.read_text()) or {}
+    data = yaml.safe_load(text) or {}
     entries = [entry for entry in data.get("env") or [] if entry.get("name") not in env]
     data["env"] = entries + [{"name": name, "value": value} for name, value in env.items()]
     return yaml.safe_dump(data, sort_keys=False)
 
 
-def render_app(state: dict, workdir: Path) -> tuple[dict[Path, str], str]:
-    """The review app's files for the AppKit project scaffolded in module 07, and a note for the summary."""
-    app_name = (state.get("review") or {}).get("app_name")
+def fill(text: str, values: dict[str, str], where: Path) -> str:
+    """text with each {{key}} replaced by its value; an unknown key is a template render.py doesn't know."""
+    def one(match: re.Match) -> str:
+        if match.group(1) not in values:
+            raise SystemExit(f"{where.name} has {{{{{match.group(1)}}}}}, which render.py doesn't know")
+        return values[match.group(1)]
+
+    return FILL_RE.sub(one, text)
+
+
+def app_values(state: dict, folder: Path) -> dict[str, str]:
+    """What the scaffold and the app's README name (module 07)."""
+    review, names = state.get("review") or {}, review_names(state)
+    return {"app_name": review["app_name"], "app_folder": str(folder), "project": review["project"],
+            "branch": review["branch"], "database": review["database"],
+            "volume": ".".join(state["volume_path"].split("/")[2:5]), "schema": state["schema"],
+            "prefix": state["prefix"], "queue_postgres": names["queue_postgres"],
+            "decisions_postgres": names["decisions_postgres"]}
+
+
+def render_app(state: dict, workdir: Path) -> tuple[dict[Path, str], dict[Path, str], str]:
+    """The review app's files for its AppKit project (module 07): those rendered or copied on every render, the
+    scaffold files to write only where they're missing (in a notebook), and a note for the summary."""
+    review = state.get("review") or {}
+    app_name = review.get("app_name")
     folder = workdir / str(app_name)
-    if not app_name or not (folder / "package.json").is_file() or not (folder / "app.yaml").is_file():
-        return {}, f"not scaffolded yet: {folder} (module 07, step 4)"
+    scaffold, base = {}, None
+    if state.get("runtime") == "workspace":  # no `databricks apps init` in a notebook: write the project instead
+        missing = [f"review.{key}" for key in ("app_name", "project", "branch", "database") if not review.get(key)]
+        if missing:
+            return {}, {}, f"not generated yet: record {missing} first (module 07, steps 1 and 2)"
+        values = app_values(state, folder)
+        spec = yaml.safe_load(SCAFFOLD.read_text())
+        scaffold = {folder / path: fill(text, values, SCAFFOLD) for path, text in spec["files"].items()}
+        base = (folder / "app.yaml").read_text() if (folder / "app.yaml").is_file() else scaffold[folder / "app.yaml"]
+        del scaffold[folder / "app.yaml"]  # merged on every render, like a scaffolded app.yaml
+    elif not app_name or not (folder / "package.json").is_file() or not (folder / "app.yaml").is_file():
+        return {}, {}, f"not scaffolded yet: {folder} (module 07, step 4)"
     names = review_names(state)
     files = {folder / target: with_app_header((SCRIPTS / "review-app" / source).read_text())
              for source, target in APP_FILES.items()}
-    files[folder / "app.yaml"] = app_yaml(folder / "app.yaml", {
+    files[folder / "app.yaml"] = app_yaml(base if base is not None else (folder / "app.yaml").read_text(), {
         "REVIEW_QUEUE_TABLE": names["queue_postgres"],
         "REVIEW_DECISIONS_TABLE": names["decisions_postgres"],
     })
-    return files, str(folder)
+    if scaffold:
+        files[folder / "README.md"] = with_md_header(fill(DEPLOY_README.read_text(), app_values(state, folder),
+                                                          DEPLOY_README))
+    return files, scaffold, str(folder)
+
+
+def with_md_header(body: str) -> str:
+    return MD_HEADER.format(digest=digest(body)) + "\n" + body
 
 
 def with_app_header(body: str) -> str:
@@ -344,10 +419,11 @@ def main() -> None:
     job_copies = {bundle / "src" / name: mark_copy(name, (SCRIPTS / name).read_text()) for name in names}
     copies = {}
     review = {}
+    scaffold = {}
     if state.get("review_app") is True:
-        app_files, app = render_app(state, workdir)
-        rendered.update({path: text for path, text in app_files.items() if path.suffix in (".ts", ".tsx")})
-        copies.update({path: text for path, text in app_files.items() if path.suffix not in (".ts", ".tsx")})
+        app_files, scaffold, app = render_app(state, workdir)
+        rendered.update({path: text for path, text in app_files.items() if path.suffix in (".ts", ".tsx", ".md")})
+        copies.update({path: text for path, text in app_files.items() if path.suffix not in (".ts", ".tsx", ".md")})
         review = {"app": app, **review_names(state)}
 
     conflicts = [str(p) for p, text in rendered.items() if p.exists() and p.read_text() != text and edited_by_hand(p)]
@@ -361,7 +437,11 @@ def main() -> None:
         if path.exists() and path.read_text() != text and copy_edited(path) and not args.force:
             summary["kept_edited"].append(str(path))  # a change exported from the workspace, say; --force replaces it
             del job_copies[path]
-    for path, text in {**rendered, **job_copies, **copies}.items():
+    for path, text in list(scaffold.items()):  # written once: the app's project files are the user's after that
+        if path.exists():
+            summary["unchanged" if path.read_text() == text else "kept_edited"].append(str(path))
+            del scaffold[path]
+    for path, text in {**scaffold, **rendered, **job_copies, **copies}.items():
         if path.exists() and path.read_text() == text:
             summary["unchanged"].append(str(path))
             continue

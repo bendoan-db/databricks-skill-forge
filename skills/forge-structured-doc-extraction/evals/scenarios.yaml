@@ -134,3 +134,19 @@ scenarios:
       - extracted_rows_unchanged                # <prefix>_extracted keeps the model's output
       - review_view_excludes_decided_values
       - app_permissions == named_reviewers_only
+
+  - id: genie-code-notebook
+    description: The review-app round trip, run by Genie Code in a notebook, with no CLI, uv, Node.js, or psql
+    harness:
+      client: genie-code                     # Genie Code in a notebook on serverless, with the skills installed by install_genie_code
+      plays_user: [deploys the generated app from its README, runs the README's GRANT in the Lakebase SQL editor]
+    depends_on: review-app-round-trip         # the same volume, schema, and answers
+    checks:
+      - extraction.json runtime == workspace, with no profile
+      - <workdir> is the notebook's folder, and holds the <name>-extract/ bundle with no workspace profile in its target
+      - job.py deploy created doc_extraction, and later review_sync, with every task's notebook in <file_path>/src/
+      - <review.app_name>/ holds the AppKit project from scaffold.yaml, the three review files, and README.md
+      - the app deployed from <workdir>/<review.app_name>/ reaches RUNNING, built by Databricks Apps with npm
+      - an approval and a correction made in the app reach the typed table
+      - no step called the databricks CLI, uv, node, pnpm, or psql
+

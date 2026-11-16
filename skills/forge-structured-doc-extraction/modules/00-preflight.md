@@ -19,7 +19,7 @@ In the same question, ask whether they want the review app. It has no default, s
 
 > Do you want a review app? It's a web app where the people you name approve or correct the values the model is unsure of, and each decision is written back to the tables. It needs a Lakebase project, and the app is billed while it runs. Without it, the low-confidence values are listed in the `<prefix>_review` view.
 
-- **Yes:** record `"review_app": true`, and ask who will review (users or groups). Module 07 deploys the app after the pipeline.
+- **Yes:** record `"review_app": true`, and ask who will review (users or groups). Module 07 deploys the app after the pipeline. In a notebook (step 2), tell the user that module 07 generates the app's code, and that they deploy it from the workspace themselves, following the `README.md` it writes; Genie Code does the rest.
 - **No:** record `"review_app": false`. Module 07 is skipped, and nothing for the app is created.
 
 Derive the following and show them back to the user:
@@ -35,6 +35,8 @@ With the review app, `schema` and `prefix` must be lowercase letters, digits, an
 
 ## 2. Tooling and base skills
 
+First, where this runs, which becomes `runtime` in step 6: `workspace` when you're Genie Code in a notebook, and `local` otherwise. In a notebook, run the two setup cells from SKILL.md, In a notebook, then the base-skill check with `forge_run`, and skip the CLI, `uv`, `node`, and `psql` lines below.
+
 **Load:** `databricks-core` (profile selection and auth; warehouse discovery in step 3).
 
 ```bash
@@ -46,7 +48,7 @@ node --version                           # review app only: >= 20
 psql --version                           # review app only: module 07 grants the app access with it
 ```
 
-`check_base_skills.py` compares the sibling skill folders with the versions recorded in `ucs.yaml`. If it exits non-zero, stop: the modules cite reference files that the installed base skills don't have. Ask the user to install or update databricks-agent-skills (v0.2.27 or later) in the same skills directory, for example with `databricks aitools update`. Mention any `newer` skills in your final report.
+`check_base_skills.py` compares the sibling skill folders with the versions recorded in `ucs.yaml`. If it exits non-zero, stop: the modules cite reference files that the installed base skills don't have. Ask the user to install or update databricks-agent-skills (v0.2.27 or later) in the same skills directory, for example with `databricks aitools update`; in a notebook, the `install_genie_code` notebook installs or updates them. Mention any `newer` skills in your final report.
 
 ## 3. Volume, files, and layout
 
@@ -114,6 +116,7 @@ After the go-ahead, write the resolved values to `<workdir>/extraction.json`:
 
 ```json
 {
+  "runtime": "local",
   "profile": "<profile>",
   "volume_path": "/Volumes/<catalog>/<schema>/<volume>",
   "catalog": "<catalog>",
@@ -130,13 +133,13 @@ After the go-ahead, write the resolved values to `<workdir>/extraction.json`:
 }
 ```
 
-With the review app, also write `"review": {"app_name": "<name>-review", "reviewers": ["<user or group>"]}`. Later modules add `description_element_types` and `page_images_path` (01), `classify_instructions` and `document_types` (02–03), `review_cutoffs` and `experiment` (05), `ocr_cluster` (06), and `review` (07).
+In a notebook, `runtime` is `workspace` and there's no `profile`. With the review app, also write `"review": {"app_name": "<name>-review", "reviewers": ["<user or group>"]}`. Later modules add `description_element_types` and `page_images_path` (01), `classify_instructions` and `document_types` (02–03), `review_cutoffs` and `experiment` (05), `ocr_cluster` (06), and `review` (07).
 
 ## Verify
 
 - Every input is resolved and echoed back. `name` is ≤40 characters and matches `^[a-z0-9-]+$`.
 - The user gave a schema, saved and recorded as `provided_schema`, or listed the fields they need.
 - The user answered the review app question, and `review_app` is `true` or `false`. With `true`, `review.reviewers` names who reviews.
-- `check_base_skills.py` exits 0.
+- `runtime` is recorded, with `profile` when it's `local`. `check_base_skills.py` exits 0.
 - The user can create tables in the target schema: the volume's, or one they chose in step 4.
 - The user confirmed the layout and approved the cost summary, and `extraction.json` exists.

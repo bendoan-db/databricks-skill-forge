@@ -29,10 +29,25 @@ Set up the bundle-managed Lakeflow job and parse every supported file in the vol
    databricks bundle deploy --profile <profile>
    ```
 
+   In a notebook (`runtime: workspace`), there's no CLI, so `job.py` deploys the bundle instead:
+
+   ```python
+   forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "deploy")
+   ```
+
+   It imports the bundle's `src/` into the folder `bundle deploy` would use, `<file_path>/src/` (`file_path` is `/Workspace/Users/<user>/.bundle/<name>-extract/default/files`), with the notebooks as notebooks and the SQL and init script as files. Then it creates each job in `databricks.yml`, or updates the one it created before, and prints each job's `job_id` and `url` under `jobs`, and `file_path`. The bundle in `<workdir>/<name>-extract/` stays the source: the user can edit it, and the next deploy reads it again.
+
 4. **Parse now.** This is the parse the user approved in module 00. Run only the parse task:
 
    ```bash
    databricks bundle run doc_extraction --only parse --profile <profile>
+   ```
+
+   In a notebook, start it without waiting, since a large volume takes a while, and give the user its `url`. Check on it with `status` until it's `done`:
+
+   ```python
+   forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "run", "--job", "doc_extraction", "--only", "parse")
+   forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "status", "--job-run-id", "<job_run_id>")
    ```
 
    Later runs parse only new or changed files (keyed on `path` + `modificationTime`), and drop files removed from the volume.
@@ -55,6 +70,8 @@ A deploy replaces the workspace copies with the local ones. To keep a change mad
 databricks workspace export <file_path>/src/<notebook> --format SOURCE --file <workdir>/<name>-extract/src/<notebook>.py --profile <profile>
 databricks workspace export <file_path>/src/<file>.sql --format AUTO --file <workdir>/<name>-extract/src/<file>.sql --profile <profile>   # the SQL files are workspace files
 ```
+
+In a notebook (`runtime: workspace`), the bundle is already in the workspace. The user can edit its `<workdir>/<name>-extract/src/` files there and ask for a run: deploy with `job.py` (step 3), then run. `job.py run` stops when the bundle changed since the last deploy, so an edit is never left out. A change made in a deployed copy, in `<file_path>/src/`, is replaced by the next deploy: copy it into the bundle first, with the `workspace export` row of SKILL.md, In a notebook. Without Genie Code, the user can run the job from its page, with **Run now with different settings** for `full_refresh`.
 
 `render.py` keeps an edited copy when it renders again, and lists it under `kept_edited`. `--force` replaces it with the skill's version. A kept copy doesn't pick up later changes to the skill, so tell the user which files are kept.
 
@@ -86,3 +103,7 @@ WHERE parse_error IS NOT NULL LIMIT 20;
 | `stitched slices could not be stored as one VARIANT` | The stitched document is too large for one VARIANT value. Split the PDF upstream, or extract from the slices separately |
 | Split-page document assembled in the wrong order | File names lack a page number and pages print none. Rename the files with page numbers, then rerun the parse task |
 | `render.py` says a file was edited by hand | Move the change into `extraction.json` and render again; `--force` discards the hand edit |
+| `job.py`: `runtime is local` | Locally, deploy and run with the CLI (steps 3 and 4); `job.py` is for a notebook |
+| `job.py`: `The bundle changed since the last deploy` | Deploy again (step 3), then run |
+| `job.py`: `only notebook and pipeline tasks deploy this way`, `can't be resolved here`, or `is applied by the CLI` | An edit to `databricks.yml` that only the CLI deploys. Undo it, or deploy that bundle with the CLI from a computer |
+| `job.py`: `other job(s) are also named` | A job with the same name that `job.py` didn't create. Tell the user; it's left alone |

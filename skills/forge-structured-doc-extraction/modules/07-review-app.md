@@ -10,7 +10,7 @@ Only when the user said yes to the review app in module 00 (`review_app` is `tru
 - **Outputs:**
   - `review` in `extraction.json`;
   - the review queue: `<prefix>_review_candidates` and its synced table, `<prefix>_review_queue`;
-  - the app `<review.app_name>`, deployed from `<workdir>/<review.app_name>/`;
+  - the app `<review.app_name>`, deployed from `<workdir>/<review.app_name>/` (in a notebook, the user deploys it, following its `README.md`);
   - Lakehouse Sync of the app's decisions;
   - the `review_sync` job and `<prefix>_decisions`.
 
@@ -41,13 +41,14 @@ reviewer ─► app ─► Postgres <prefix>_review.<prefix>_decisions ══ La
      - a Lakebase project (step 2), billed while its compute runs; it scales to zero when idle;
      - a synced table, whose pipeline runs once per extraction job run;
      - Lakehouse Sync;
-     - the app, billed while it runs;
+     - the app, billed while it runs (in a notebook, the user deploys it, from the code step 4 generates);
      - the `review_sync` job, one short serverless run per batch of decisions.
 
 2. **Lakebase project.** **Load:** `databricks-lakebase` (projects, branches, and databases).
    - Ask whether to reuse a project or create one. Creating one runs `databricks postgres create-project <app_name> --json '{"spec": {"display_name": "<name> review"}}' --profile <profile>`.
    - Use its `production` branch and its `databricks_postgres` database. The synced table, the app, and Lakehouse Sync all use the same database.
    - Record `review.project`, plus `review.branch` and `review.database`, the full resource names from `list-branches` and `list-databases`.
+   - In a notebook, each of these calls has its row in SKILL.md, In a notebook.
 
 3. **The review queue.** Render, deploy, and run the extraction task, which creates `<prefix>_review_candidates` and `<prefix>_decisions`. It calls AI functions only for documents parsed since the last extraction, as any job run would:
 
@@ -57,6 +58,8 @@ reviewer ─► app ─► Postgres <prefix>_review.<prefix>_decisions ══ La
    databricks bundle deploy --profile <profile>
    databricks bundle run doc_extraction --only extract --profile <profile>
    ```
+
+   In a notebook: render the same way, then `forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "deploy")`, and `forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "run", "--job", "doc_extraction", "--only", "extract", "--wait")`.
 
    Create the synced table, in `TRIGGERED` mode, from the candidates table. **Load:** `databricks-lakebase` `references/synced-tables.md`.
 
@@ -69,7 +72,7 @@ reviewer ─► app ─► Postgres <prefix>_review.<prefix>_decisions ══ La
      | jq -r '.. | .pipeline_id? // empty' | head -1
    ```
 
-   Record that id as `review.sync_pipeline_id`. Then render and deploy again, which adds the `review_queue` task, and run it once: `databricks bundle run doc_extraction --only review_queue --profile <profile>`.
+   Record that id as `review.sync_pipeline_id`. Then render and deploy again, which adds the `review_queue` task, and run it once: `databricks bundle run doc_extraction --only review_queue --profile <profile>`. In a notebook, the synced-table calls have their rows in SKILL.md, In a notebook (read the pipeline id from the synced table's JSON), and the run is `forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "run", "--job", "doc_extraction", "--only", "review_queue", "--wait")`, after deploying again.
 
 4. **The app.** Scaffold an AppKit app with the Lakebase and Files features. **Load:** `databricks-apps` `references/appkit/lakebase.md` (scaffolding, schema ownership, reading synced tables).
 
@@ -88,6 +91,11 @@ reviewer ─► app ─► Postgres <prefix>_review.<prefix>_decisions ══ La
    - The copies track the skill. `render.py` refuses to overwrite one that was edited by hand after it was copied, unless you pass `--force`.
    - Use the package manager the scaffold chose (`packageManager` in `package.json`). Don't change the AppKit version it set.
 
+   In a notebook (`runtime: workspace`), there's no `databricks apps init` or Node.js, so the same `render.py` run writes the whole AppKit project into `<workdir>/<app_name>/` instead: the scaffold in `<skill>/scripts/review-app/scaffold.yaml` (AppKit 0.84.0, set up for npm), the three review files, `app.yaml` with the table names, and a `README.md` on deploying the app from the workspace. It writes each scaffold file only when it's missing, so an edit there is kept. Its summary's `review.app` says what's still missing, such as `review.branch`. Then:
+   - Give the user the app's `README.md`. They create the app with its two resources, `postgres` and `files`, and the `files.files` user scope, and deploy it from `<workdir>/<app_name>/`. Databricks Apps runs `npm install` and `npm run build` on the deploy, so nothing is installed in the notebook.
+   - Wait until they say it's deployed, then check it with `apps get` (its row in SKILL.md, In a notebook): `app_status.state` is `RUNNING`. If the build failed, its **Logs** say why.
+   - Their deploy is this step's go-ahead: you don't deploy the app yourself.
+
    After the user confirms, deploy: `databricks apps deploy --profile <profile>`. **Load:** `databricks-apps` `references/platform-guide.md` (deploy, service principal permissions, user access). On its first start, the app creates `<prefix>_review.<prefix>_decisions` and owns it.
 
 5. **Let the app read the queue.** The sync owns the queue's Postgres schema, so the app's service principal can't read it until the project owner grants access. Get the principal from `databricks apps get <app_name> --profile <profile>` (`service_principal_client_id`), then confirm and run:
@@ -97,18 +105,20 @@ reviewer ─► app ─► Postgres <prefix>_review.<prefix>_decisions ══ La
      'GRANT USAGE ON SCHEMA "<schema>" TO "<sp_client_id>"; GRANT SELECT ON "<schema>"."<prefix>_review_queue" TO "<sp_client_id>";'
    ```
 
+   In a notebook there's no `psql`: give the user the two statements with the principal filled in, to run in the Lakebase project's SQL editor as its owner (the app's `README.md`, step 3), and wait until they have.
+
 6. **Sync decisions back.** Confirm, then turn on Lakehouse Sync for the app's schema. **Load:** `databricks-lakebase` `references/lakehouse-sync.md` (CDF configs, the database resource path, prerequisites).
 
    ```bash
    databricks postgres create-cdf-config <review.database> <catalog> <schema> <prefix>_review \
-     --cdf-config-id <app_name>-decisions --profile <profile>
+     --cdf-config-id review_<prefix> --profile <profile>   # [a-z][a-z0-9_]: no hyphens
    ```
 
    - Lakehouse Sync skips empty tables, so `<catalog>.<schema>.lb_<prefix>_decisions_history` appears only after the first decision. Approve one value in the app with the user (step 8), then wait until `list-cdf-statuses` shows the table streaming and the history table exists.
-   - Then record `review.history_ready: true`, and render and deploy again. That adds the `review_sync` job, triggered by updates to the history table. Run it once for the decisions made before it existed: `databricks bundle run review_sync --profile <profile>`.
+   - Then record `review.history_ready: true`, and render and deploy again. That adds the `review_sync` job, triggered by updates to the history table. Run it once for the decisions made before it existed: `databricks bundle run review_sync --profile <profile>`. In a notebook: `forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "run", "--job", "review_sync", "--wait")`, after deploying again.
    - If the catalog has default storage, Lakehouse Sync can't write there. Set `review.history_schema` to a `<catalog>.<schema>` that can, and create the config there instead.
 
-7. **Share the app** with the reviewers from step 1 only. Use `databricks apps update-permissions <app_name> --json '{"access_control_list": [{"group_name": "<group>", "permission_level": "CAN_USE"}]}' --profile <profile>` (`user_name` for a person). Anyone who can open the app sees every queued value, because synced tables don't carry Unity Catalog row filters or column masks.
+7. **Share the app** with the reviewers from step 1 only. Use `databricks apps update-permissions <app_name> --json '{"access_control_list": [{"group_name": "<group>", "permission_level": "CAN_USE"}]}' --profile <profile>` (`user_name` for a person); in a notebook, its row in SKILL.md, In a notebook. Anyone who can open the app sees every queued value, because synced tables don't carry Unity Catalog row filters or column masks.
 
 8. **Try one decision of each kind** with the user: approve one value, and correct another with a note. Within a few minutes, both reach the typed table (see Verify).
 
@@ -140,3 +150,7 @@ SELECT path, reviewed_fields, reviewed_at FROM <catalog>.<schema>.<prefix>_<type
 | Document pane returns 403 | The files plugin reads as the reviewer when `databricks.yml` lists `files.files` under `user_api_scopes`. The reviewer needs `READ VOLUME` on the volume. Grant it only to the reviewers the user named |
 | `apps validate` fails on a type error in `server.ts` | The AppKit version's API differs from the one the review app was written against. Run `npx @databricks/appkit docs` for the plugin's current shape, and report it to the skill owner |
 | `apply_decisions` failed with a concurrent-modification error | An extraction run rewrote the same document at the same time. The task retries; the next run applies anything left |
+| In a notebook: `render.py`'s `review.app` says `not generated yet` | Record what it names, `review.project`, `branch`, and `database`, from step 2, then render again |
+| In a notebook: the app's deploy fails in `npm install` | The app's compute has no egress to the npm registry. Ask an admin for egress to `registry.npmjs.org`, or a private npm mirror, then deploy again |
+| In a notebook: the app's deploy fails in `npm run build` | Its **Logs** name the file. A type error in `server.ts` or `App.tsx` means the AppKit version's API differs from the scaffold's (0.84.0): report it to the skill owner |
+| In a notebook: the app can't find `postgres` or `files` | Its resources were created with other keys. Edit the app's resources so the keys are `postgres` and `files`, as `app.yaml` names them, and deploy again |

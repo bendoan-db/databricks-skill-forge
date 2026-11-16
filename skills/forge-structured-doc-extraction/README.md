@@ -9,16 +9,17 @@ Turns the documents in a Unity Catalog volume into typed Delta tables: one table
 ## Purpose
 
 - **This Forge Skill is used to:**
-  - pull field values, entities, or line items from documents into tables;
-  - classify documents, or split document packets;
-  - queue uncertain values for review, or deploy an app where people approve or correct them;
+  - Extract field values, entities, or line items from documents into tables;
+  - Classify documents, or split document packets;
+  - Queue uncertain values for review, or deploy an app where people approve or correct them (optional);
   - measure extraction accuracy.
-- **Not for** answering questions about documents: that's `forge-doc-qa-agent`. **Not for** a search index: that's `forge-unstructured-doc-extraction`.
-- **The documents it reads:** the same formats and limits as the search index skill: PDF, Word, PowerPoint, and images, up to 100 MB a file. PDFs over 500 pages are parsed in slices, and with `split_pages`, page-per-file scans are put back together.
+- Supports PDF, Word, PowerPoint, and images, up to 100 MB a file. PDFs over 500 pages are parsed in slices, and with `split_pages`, page-per-file scans are put back together.
 
 ## How to Run
 
-The user starts it with `/forge` (`@forge` in Genie Code) and says what they want, or names the skill. The coding assistant works through it step by step, and asks before anything that costs money.
+The user starts it with `/forge` (`@forge` in Genie Code) and says what they want, or names the skill. The coding assistant works through it step by step, and asks before anything that costs money. It runs in either of two places:
+- **Locally,** in a coding assistant on the user's computer, with the Databricks CLI. The working directory is the folder it's started in.
+- **In Genie Code, in a notebook,** with no CLI to install: it runs each step in the notebook's cells, as the notebook's user, and the notebook's folder is the working directory. The user opens a notebook in the folder the project should live in, and starts it there. With the review app, Genie Code generates the app's code and a README on deploying it, and the user deploys it from the workspace.
 
 > /forge Our loan files in /Volumes/main/lending/loan_files are single PDFs with many documents inside. Pull the borrower's income and bank balances into tables.
 
@@ -29,11 +30,11 @@ Its progress is saved in `extraction.json`. The user can run `/forge` in the sam
 **Prerequisites:**
 - **Data and workspace:** a Unity Catalog volume holding the documents, in a workspace with serverless compute.
 - **Tools:**
-  - the Databricks CLI (v1.11.0 or later), signed in to the workspace;
-  - `uv`;
-  - the Databricks Agent Skills (v0.2.27 or later), installed next to the Forge skills.
+  - locally: the Databricks CLI (v1.11.0 or later), signed in to the workspace, and `uv`; for the review app, also Node.js 20+, pnpm, and `psql`;
+  - in Genie Code: a notebook on serverless compute (environment 2 or later), and nothing else;
+  - either way, the Databricks Agent Skills (v0.2.27 or later), installed next to the Forge skills.
 
-  The Forge installer sets these up.
+  The Forge installer sets these up, or in Genie Code, the `install_genie_code` notebook.
 - **Privileges:**
   - `READ VOLUME` on the volume;
   - `USE SCHEMA` and `CREATE TABLE` on the target schema, plus `CREATE VOLUME` for page images (word-level boxes);
@@ -50,7 +51,7 @@ Its progress is saved in `extraction.json`. The user can run `/forge` in the sam
 |---|---|---|---|
 | `volume_path` | Yes | — | Where the documents are: `/Volumes/<catalog>/<schema>/<volume>`, or a folder in it |
 | `review_app` | Yes | — | Whether to deploy the review app, where the people the user names approve or correct uncertain values |
-| `profile` | No | the user's CLI profile | The CLI profile every command uses |
+| `profile` | No | the user's CLI profile | The CLI profile every command uses, when it runs locally. In Genie Code, the notebook's user |
 | `target_schema` | No | the volume's catalog and schema | Where the tables are created |
 | `name` | No | from the volume's name | Names the job's bundle, `<name>-extract` |
 | `layout` | No | proposed from a sample | `single_type` (every file is one document of one type), `one_per_file` (one document per file, of several types), or `packet` (files that bundle many documents) |
@@ -77,7 +78,7 @@ Its progress is saved in `extraction.json`. The user can run `/forge` in the sam
   - an AppKit app on Lakebase;
   - its queue, `<prefix>_review_candidates` and a synced table;
   - the `review_sync` job and `<prefix>_decisions`, which write each approval or correction back into the typed tables.
-- **The job:** `<name>-extract`, a Lakeflow job in a Declarative Automation Bundle. It processes new files as they arrive, and each document only once. Its tasks are notebooks the user can open and edit in the workspace.
+- **The job:** `<name>-extract`, a Lakeflow job in a Declarative Automation Bundle. It processes new files as they arrive, and each document only once. Its tasks are notebooks the user can open and edit in the workspace. Locally, the Databricks CLI deploys the bundle; in Genie Code, the skill's `job.py` creates the job from it, and the bundle stays in the working directory for the user to edit.
 - **The evaluation:** an MLflow run with accuracy per field and document, when there are labels.
 
 **In the working directory:**
@@ -88,8 +89,8 @@ Its progress is saved in `extraction.json`. The user can run `/forge` in the sam
 ├── extraction.json       # the settings, including the document types and schemas
 ├── provided_schema.*     # optional: the user's schema, as given
 ├── ground_truth.jsonl    # optional: the user's labeled documents
-├── <name>-extract/       # the job's bundle
-└── <review app>/         # optional: the review app's project
+├── <name>-extract/       # the job's bundle, which the user can edit
+└── <review app>/         # optional: the review app's project; in Genie Code, with a README.md on deploying it
 ```
 
 **When it's done:**
@@ -115,7 +116,7 @@ Its progress is saved in `extraction.json`. The user can run `/forge` in the sam
 | 04 | Tables and review | Publishes the typed tables, and walks the user through the review queue |
 | 05 | Evaluate | Profiles confidence to set review cutoffs, and, with labels, measures accuracy in MLflow |
 | 06 | Localize | Optional: finds each value's word-level box with OCR |
-| 07 | Review app | Optional: deploys the app where reviewers approve or correct values, synced back to the tables |
+| 07 | Review app | Optional: deploys the app where reviewers approve or correct values, synced back to the tables. In Genie Code, generates the app's code and a README, and the user deploys it |
 
 Each step ends with a check that must pass before the next one starts.
 

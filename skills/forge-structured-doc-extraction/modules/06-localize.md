@@ -22,7 +22,7 @@ Tesseract is a system binary, and serverless compute can't install one, so the t
    databricks clusters list-node-types --profile <profile> -o json | jq -r '.node_types[] | select(.num_cores >= 4 and .num_cores <= 8 and (.is_deprecated | not)) | .node_type_id' | head -10
    ```
 
-   Record `"ocr_cluster": {"spark_version": "<key>", "node_type_id": "<id>"}` and `"localize": true` in `extraction.json`.
+   In a notebook, read the same lists with their rows in SKILL.md, In a notebook, and pick from them in Python. Record `"ocr_cluster": {"spark_version": "<key>", "node_type_id": "<id>"}` and `"localize": true` in `extraction.json`.
 
 2. **Confirm the cost, then render, deploy, and run.** Each job run now starts the cluster for the `localize` task, billed while it runs. The init script needs egress to the Ubuntu package mirrors.
 
@@ -32,6 +32,15 @@ Tesseract is a system binary, and serverless compute can't install one, so the t
    databricks bundle deploy --profile <profile>
    databricks bundle run doc_extraction --only localize --profile <profile>
    ```
+
+   In a notebook, render the same way, then:
+
+   ```python
+   forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "deploy")
+   forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "run", "--job", "doc_extraction", "--only", "localize", "--wait")
+   ```
+
+   `job.py` creates the job's classic cluster the way the bundle does, with the init script imported into `<file_path>/src/` as a workspace file.
 
    Later runs localize only documents whose extraction changed (`<prefix>_progress`, stage `localize`).
 

@@ -16,6 +16,7 @@ shared:                                     # identical in every skill that carr
   - scripts/check_base_skills.py
   - scripts/parse_quality.py
   - scripts/write_readme.py
+  - scripts/job.py                         # with forge-aig-evaluate-guardrails
 
 catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
   title: Structured extraction
@@ -39,7 +40,7 @@ modules:
 
   - id: 01-ingest-parse
     file: modules/01-ingest-parse.md
-    scripts: [scripts/render.py, scripts/databricks.yml, scripts/parse.py, scripts/parse.sql]
+    scripts: [scripts/render.py, scripts/databricks.yml, scripts/parse.py, scripts/parse.sql, scripts/job.py]
     base_skills:
       - name: databricks-ai-functions
         version: 0.2.0
@@ -67,7 +68,7 @@ modules:
 
   - id: 03-extract
     file: modules/03-extract.md
-    scripts: [scripts/render.py, scripts/extract.py, scripts/extract.sql]
+    scripts: [scripts/render.py, scripts/extract.py, scripts/extract.sql, scripts/job.py]
     base_skills:
       - name: databricks-ai-functions
         version: 0.2.0
@@ -95,7 +96,8 @@ modules:
 
   - id: 06-localize
     file: modules/06-localize.md
-    scripts: [scripts/render.py, scripts/databricks.yml, scripts/localize.py, scripts/localize.sql, scripts/install_tesseract.sh]
+    scripts: [scripts/render.py, scripts/databricks.yml, scripts/localize.py, scripts/localize.sql, scripts/install_tesseract.sh,
+              scripts/job.py]
     base_skills:
       - name: databricks-jobs
         version: 0.2.0
@@ -117,7 +119,8 @@ modules:
   - id: 07-review-app
     file: modules/07-review-app.md
     scripts: [scripts/render.py, scripts/databricks.yml, scripts/extract.py, scripts/extract.sql, scripts/review-app/server.ts,
-              scripts/review-app/review-routes.ts, scripts/review-app/App.tsx]
+              scripts/review-app/review-routes.ts, scripts/review-app/App.tsx, scripts/review-app/scaffold.yaml,
+              scripts/review-app/deploy.md, scripts/job.py]
     base_skills:
       - name: databricks-lakebase
         version: 0.1.0
@@ -127,7 +130,7 @@ modules:
         uses: [AppKit scaffold with lakebase and files, reading synced tables, deploy, app permissions]
     external:
       - name: "@databricks/appkit"
-        version: set by databricks apps init  # the review app was written against 0.84.0
+        version: set by databricks apps init  # the review app was written against 0.84.0; scaffold.yaml pins it in a notebook
         uses: [createApp, files, lakebase, and server plugins]
       - name: node
         version: ">=20"
@@ -262,6 +265,25 @@ facts:
         file: skills/analyze-extraction-confidence/SKILL.md
         checked: 2026-10-28
       - workspace_run: 2026-11-09
+  - fact: In Genie Code in a notebook, the SDK signs in as the notebook's user only in the notebook's own Python process, so the scripts run there through runpy (forge_run), not as subprocesses
+    kind: heuristic                          # the SDK's notebook sign-in reads the notebook's REPL context, which a subprocess doesn't have; not yet tried in a workspace
+    used_in: [SKILL.md, scripts/job.py]
+    evidence: []
+  - fact: A file written through /Workspace is a workspace file, not a notebook, and serverless doesn't guarantee a notebook's working directory; the Workspace import API with format SOURCE and a language makes a notebook
+    used_in: [SKILL.md, scripts/job.py]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/files/workspace-interact
+        checked: 2026-11-16
+      - url: https://docs.databricks.com/api/workspace/workspace/import
+        checked: 2026-11-16
+  - fact: Databricks Apps deploys from a workspace folder, and on each deploy runs npm install (pnpm install --frozen-lockfile with a pnpm-lock.yaml) and the package.json build script; the review app's scaffold for a notebook (AppKit 0.84.0) uses npm and has no lockfile
+    used_in: [scripts/review-app/scaffold.yaml, scripts/review-app/deploy.md, modules/07-review-app.md]
+    evidence:
+      - url: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy
+        checked: 2026-11-16
+  - fact: A Lakehouse Sync (CDF) config id matches [a-z][a-z0-9_]{0,62}
+    used_in: [modules/07-review-app.md]
+    evidence: []                             # from the Python SDK's PostgresAPI.create_cdf_config docstring (v0.167.0, 2026-11-16); confirm in the docs
   - fact: Localization passes at a hit rate of 0.8
     kind: heuristic                          # the advance-document-processing word-level design expects ~80% with OCR alone
     used_in: [scripts/localize.py, modules/06-localize.md, SKILL.md, evals/scenarios.yaml]

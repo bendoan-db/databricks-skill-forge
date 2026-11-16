@@ -62,6 +62,8 @@ databricks bundle validate --profile <profile>
 databricks bundle deploy --profile <profile>
 ```
 
+In a notebook (`runtime: workspace`), render the same way, then deploy with `forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "deploy")` (module 01, step 3).
+
 With `document_types` complete, the job's file-arrival trigger is now `UNPAUSED`: new files are parsed, classified, and extracted on arrival.
 
 ## 3. Run, after the user confirms
@@ -71,6 +73,8 @@ Restate the cost (one `ai_extract` call per segment, plus `ai_classify` for `one
 ```bash
 databricks bundle run doc_extraction --profile <profile>
 ```
+
+In a notebook, start it with `forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "run", "--job", "doc_extraction")`, give the user its `url`, and check on it with `status --job-run-id <job_run_id>` until it's `done`.
 
 The `parse` task finds nothing new, and the `extract` task processes every parsed document. For each batch, it:
 1. Builds the segments (module 02).
@@ -86,6 +90,8 @@ The `parse` task finds nothing new, and the `extract` task processes every parse
 ```bash
 databricks bundle run doc_extraction --params full_refresh=true --profile <profile>
 ```
+
+In a notebook: `forge_run("<skill>/scripts/job.py", "--state", "<workdir>/extraction.json", "--bundle", "<workdir>/<name>-extract", "run", "--job", "doc_extraction", "--params", "full_refresh=true")`.
 
 `full_refresh` classifies and extracts every document again (no re-parse), so it re-bills both. Confirm before running it.
 

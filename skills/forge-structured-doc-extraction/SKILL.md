@@ -1,7 +1,7 @@
 ---
 name: forge-structured-doc-extraction
 description: "Forge use case, normally started by the forge skill: extracts fields, entities, and line items from the documents in a Unity Catalog volume (PDF, DOCX, PPTX, images) into typed Delta tables, with a citation and confidence score for every value: incremental ai_parse_document parsing, ai_classify v2.1 routing for mixed documents and multi-document packets such as loan or claim files, ai_extract v2.1 per document type, a review queue of low-confidence and unscored values with cutoffs calibrated per document type, an optional review app (Lakebase and AppKit) where people approve or correct them and their decisions are written back to the tables, accuracy scoring against labeled documents in MLflow, and optional word-level bounding boxes from OCR. Use when forge hands off to it, or when the user names this skill."
-compatibility: Requires databricks CLI (>= v1.11.0), Python 3.11+, uv, and the databricks-agent-skills base skills (>= v0.2.27) installed in the same skills directory as this skill. Word-level localization also needs permission to create a classic job cluster. The review app also needs Node.js 20+, pnpm, psql, and a Lakebase Autoscaling project.
+compatibility: Runs locally, with databricks CLI (>= v1.11.0), Python 3.11+, and uv, or in Genie Code in a notebook, on serverless compute (environment 2 or later). Requires the databricks-agent-skills base skills (>= v0.2.27) installed in the same skills directory as this skill. Word-level localization also needs permission to create a classic job cluster. The review app needs a Lakebase Autoscaling project, and locally Node.js 20+, pnpm, and psql; in a notebook its code is generated for the user to deploy.
 metadata:
   version: "0.4.0"
   forge_kind: use-case
@@ -36,11 +36,72 @@ Optional review app (07): <prefix>_review_candidates ══ Lakebase synced tabl
 
 - `<skill>` is the folder that holds this SKILL.md. The base skills are its siblings, for example `<skill>/../databricks-core`.
 - This is a Forge use case. The `forge` skill (`<skill>/../forge`) usually starts it and passes along what the user already said. Loaded directly, it runs the same way.
-- `<workdir>` is where `extraction.json` and the `<name>-extract/` bundle live. Default: the current directory.
+- `<workdir>` is where `extraction.json` and the `<name>-extract/` bundle live. Default: the current directory; in Genie Code, the folder of the notebook it's open in.
 - `<workdir>/extraction.json` holds every resolved value, including the document types and their schemas. Module 00 creates it, each module reads it first, and you record what a module adds before you move on. In commands, `<key>` means the value of `key` in that file, for example `<profile>` or `<prefix>`.
+- `runtime`, in that file, is where the skill runs, recorded once in module 00: `local`, a coding assistant on the user's computer, using the CLI profile; or `workspace`, Genie Code in a notebook, signed in as the notebook's user. The commands in the modules are the local ones. With `workspace`, run each one's equivalent from [In a notebook](#in-a-notebook).
 - A **Load:** line names a base skill, and usually one reference file in it, to read at that step. Don't load base skills up front, and read only the file named.
 - Scripts declare their own dependencies, so run them with `uv run <skill>/scripts/<file>.py` from any directory. Use `render.py` to fill templates. Never fill `<...>` placeholders in `scripts/` by hand.
 - The job's tasks (`parse.py`, `extract.py`, `localize.py`) are Databricks notebooks, so users can open and change them in the workspace. To keep such a change, see module 01, Editing the job's notebooks.
+
+### In a notebook
+
+With `runtime: workspace`, Genie Code runs every step in Python cells of the notebook it's open in, on serverless compute, as the notebook's user. There's no CLI profile, `databricks` CLI, `uv`, Node.js, or `psql`. `<workdir>` is that notebook's folder, `/Workspace` plus the folder of `dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()` (serverless doesn't guarantee the working directory). `<skill>` is this skill's folder under `/Workspace/Users/<user>/.assistant/skills/` or `/Workspace/.assistant/skills/`.
+
+Once per session, install the scripts' packages in a cell of their own:
+
+```python
+%pip install -q "databricks-sdk>=0.68" "pyyaml>=6" "mlflow[databricks]>=3.1" "numpy>=1.26" "scipy>=1.11"
+dbutils.library.restartPython()
+```
+
+Then define `forge_run`, which runs a script in the notebook's own Python process, the only one signed in as the notebook's user (a subprocess isn't):
+
+```python
+import runpy
+import sys
+
+
+def forge_run(script, *args):
+    """Run a Forge skill script here, as `uv run <script> <args>` does locally. Returns its exit status."""
+    argv, sys.argv = sys.argv, [script, *map(str, args)]
+    try:
+        runpy.run_path(script, run_name="__main__")
+    except SystemExit as e:
+        if isinstance(e.code, str):
+            print(e.code, file=sys.stderr)
+            return 1
+        return e.code or 0
+    finally:
+        sys.argv = argv
+    return 0
+```
+
+| Locally | In a notebook, with `w = WorkspaceClient()` (`from databricks.sdk import WorkspaceClient`) |
+|---|---|
+| `uv run <skill>/scripts/<file>.py <args>` | `forge_run("<skill>/scripts/<file>.py", <args>)`. A non-zero status fails the step, as locally |
+| `databricks --version`, `uv --version`, `node --version`, `psql --version`, `databricks auth login` | Not needed |
+| `databricks aitools update` | The user runs the `install_genie_code` notebook again |
+| `databricks volumes read <catalog>.<schema>.<volume>` | `w.api_client.do("GET", "/api/2.1/unity-catalog/volumes/<catalog>.<schema>.<volume>")` |
+| `databricks schemas list <catalog>` | `w.api_client.do("GET", "/api/2.1/unity-catalog/schemas", query={"catalog_name": "<catalog>"})` |
+| `databricks schemas create <schema> <catalog>` (after its confirmation) | `w.api_client.do("POST", "/api/2.1/unity-catalog/schemas", body={"name": "<schema>", "catalog_name": "<catalog>"})` |
+| `databricks grants get-effective schema <catalog>.<schema>` (or `catalog <catalog>`) | `w.api_client.do("GET", "/api/2.1/unity-catalog/effective-permissions/schema/<catalog>.<schema>")` (or `catalog/<catalog>`) |
+| `get-default-warehouse`, `databricks warehouses list` | `w.api_client.do("GET", "/api/2.0/sql/warehouses")`, and propose a serverless one |
+| `databricks experimental aitools tools query`, and SQL in the modules | A SQL cell, or `spark.sql(...)` |
+| `databricks clusters spark-versions`, `list-node-types` | `w.api_client.do("GET", "/api/2.1/clusters/spark-versions")`, `w.api_client.do("GET", "/api/2.1/clusters/list-node-types")` |
+| `databricks bundle validate`, `deploy`, `run`, `summary` | `job.py` (modules 01, 03, 06, and 07) |
+| `databricks workspace export <path> --format SOURCE --file <file>` | `w.api_client.do("GET", "/api/2.0/workspace/export", query={"path": "<path>", "format": "SOURCE"})["content"]`, base64-decoded and written to `<file>` |
+| `databricks postgres create-project <id> --json '{"spec": ...}'` | `w.api_client.do("POST", "/api/2.0/postgres/projects", query={"project_id": "<id>"}, body={"spec": ...})`. It answers with an operation: `w.api_client.do("GET", "/api/2.0/postgres/<operation name>")` until it's `done` |
+| `databricks postgres list-branches <project>`, `list-databases <branch>` | `w.api_client.do("GET", "/api/2.0/postgres/<project>/branches")`, `w.api_client.do("GET", "/api/2.0/postgres/<branch>/databases")` |
+| `databricks postgres create-synced-table <table> --json '{"spec": ...}'` | `w.api_client.do("POST", "/api/2.0/postgres/synced_tables", query={"synced_table_id": "<table>"}, body={"spec": ...})` |
+| `databricks postgres get-synced-table synced_tables/<table>` | `w.api_client.do("GET", "/api/2.0/postgres/synced_tables/<table>")` |
+| `databricks postgres create-cdf-config <database> <catalog> <schema> <postgres schema> --cdf-config-id <id>` | `w.api_client.do("POST", "/api/2.0/postgres/<database>/cdf-configs", query={"cdf_config_id": "<id>"}, body={"catalog": "<catalog>", "schema": "<schema>", "postgres_schema": "<postgres schema>"})` |
+| `databricks postgres list-cdf-statuses <database>/cdf-configs/<id>` | `w.api_client.do("GET", "/api/2.0/postgres/<database>/cdf-configs/<id>/cdf-statuses")` |
+| `databricks apps init`, `pnpm install`, `apps validate`, `apps deploy` | `render.py` generates the app, and the user deploys it from the workspace, following its `README.md` (module 07, step 4) |
+| `databricks apps get <app_name>` | `w.api_client.do("GET", "/api/2.0/apps/<app_name>")` |
+| `databricks psql --project <project> -- ... -c '<SQL>'` | The user runs the SQL in the Lakebase project's SQL editor, as its owner (the app's `README.md`, step 3) |
+| `databricks apps update-permissions <app_name> --json '<json>'` (after its confirmation) | `w.api_client.do("PATCH", "/api/2.0/permissions/apps/<app_name>", body=<json>)` |
+
+Everything else is the same in both: the steps, the checks, the go-aheads, and Verify.
 
 ## Inputs
 
@@ -49,7 +110,7 @@ Collect these together in one question during module 00. `volume_path` is requir
 | Input | Default | Notes |
 |---|---|---|
 | `volume_path` | — (required) | `/Volumes/<catalog>/<schema>/<volume>[/subdir]` |
-| `profile` | from `databricks-core` | CLI profile for every command |
+| `profile` | from `databricks-core` | CLI profile for every command. Locally only: in a notebook, the notebook's user |
 | `target_schema` | the volume's `<catalog>.<schema>` | Where the tables are created. If the user can't create tables there, module 00 proposes one they can |
 | `name` | derived from the volume name | Lowercase letters, digits, hyphens, ≤40 chars; the bundle is `<name>-extract` |
 | `layout` | proposed in module 00 | `single_type`, `one_per_file`, or `packet` (see Decision points) |
@@ -69,7 +130,7 @@ Collect these together in one question during module 00. `volume_path` is requir
 - **Never delete** tables, views, or volumes without separate confirmation that names the exact resource.
 - **Don't grant access** to the tables, the review view, or the review app unless the user names the users or groups.
 - **Treat extracted values as sensitive.** Documents like these often hold personal data (names, SSNs, account numbers). In reports, show counts and field names, plus only the values the user asks to see.
-- **Never ask for or store tokens.** Use the CLI profile. `extraction.json` holds names and settings only.
+- **Never ask for or store tokens.** Use the CLI profile locally, and the notebook's own sign-in in a notebook. `extraction.json` holds names and settings only.
 - **Don't build or suggest Agent Bricks Information Extraction.** It is being deprecated. Build the pipeline this skill describes.
 - **Docs beat base skills when they disagree.** Follow [Base-skill guidance to override](#base-skill-guidance-to-override) and the doc pages the modules cite.
 
@@ -106,7 +167,7 @@ The working directory ends up with the state file, the bundle, and (for module 0
 ├── provided_schema.*    # optional: the schema the user brought, as given (module 00)
 ├── ground_truth.jsonl   # optional labels for module 05
 ├── <name>-extract/      # Declarative Automation Bundle: parse → extract (→ localize, review_queue) job, plus review_sync; rendered by render.py
-└── <review.app_name>/   # optional review app (module 07): an AppKit project; render.py copies in the review files
+└── <review.app_name>/   # optional review app (module 07): an AppKit project; render.py copies in the review files (in a notebook, it writes the whole project and a README.md on deploying it)
 ```
 
 **The README.** Each time a module's Verify passes, module 00's included, update `<workdir>/README.md`:
@@ -141,7 +202,7 @@ It explains the project to whoever opens the folder, from this skill and every F
 | Extraction mode | Default | A type has long documents or many fields, and module 05 shows misses. Then set `"mode": "precision"` for that type |
 | Review threshold | 0.8, raised per type by `review_cutoffs` from module 05 | Raise `review_threshold` to send more values to people. Lower it only when module 05's calibration shows that values just under it are reliably correct. Recalibrate `review_cutoffs` after a schema change or a large new batch of a different kind of document |
 | Word-level boxes | Off | Reviewers need to see the exact words behind each value (highlights in a review UI). Then turn on `localize` (module 06) |
-| Review app | Asked in module 00 | Yes: module 07 deploys the app after the pipeline, so people approve or correct the review queue's values and the tables carry their decisions. No: nothing for it is created, and the `<prefix>_review` view still lists the values |
+| Review app | Asked in module 00 | Yes: module 07 deploys the app after the pipeline, so people approve or correct the review queue's values and the tables carry their decisions. In a notebook, it generates the app's code instead, and the user deploys it from the workspace with the `README.md` it writes. No: nothing for it is created, and the `<prefix>_review` view still lists the values |
 | Trigger | File arrival on the volume | Large batches land on a schedule. Then set `schedule_cron` (Quartz syntax) in `extraction.json` and render again |
 
 ## Done when
