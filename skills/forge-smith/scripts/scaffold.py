@@ -302,15 +302,16 @@ def skill_md(bp: dict) -> str:
 
 
 def overview_md(bp: dict) -> str:
-    """README.md, the skill's overview for Databricks users: what it's for, what they provide, what they get."""
+    """README.md, the skill's overview for Databricks users, in the third person: its purpose, how to run it, its
+    inputs and outputs, and how it works."""
     state, catalog = bp["state_file"], bp["catalog"]
     required, optional = bp["inputs"]["required"], bp["inputs"].get("optional") or []
     if "profile" not in {i["name"] for i in required + optional}:
-        optional = [{"name": "profile", "default": "your CLI profile", "notes": "The CLI profile every command uses"},
-                    *optional]
-    start = ("It's a Forge use case. Start it with `/forge` (`@forge` in Genie Code) and say what you want, or name "
-             "the skill." if bp.get("routed") else
-             "Start it by naming the skill: `forge` doesn't route to it unless it joins Forge's catalog.")
+        optional = [{"name": "profile", "default": "the user's CLI profile",
+                     "notes": "The CLI profile every command uses"}, *optional]
+    start = ("The user starts it with `/forge` (`@forge` in Genie Code) and says what they want, or names the skill."
+             if bp.get("routed") else
+             "The user starts it by naming the skill: `forge` doesn't route to it unless it joins Forge's catalog.")
     floors = ", ".join(f"`{k}` ≥ {v}" for k, v in bp["thresholds"].items())
     billable = bp.get("billable") or [MARK.format("each billable or shared action")]
     return "\n".join([
@@ -318,32 +319,39 @@ def overview_md(bp: dict) -> str:
         "",
         bp["summary"].strip(),
         "",
-        start + " Your coding assistant works through it step by step, and asks before anything that costs money.",
+        "## Purpose",
         "",
-        "## What it's for",
-        "",
-        f"- **Choose it for** {catalog['choose_when']}.",
+        "- **This Forge Skill is used to:**",
+        "  - " + MARK.format(f"what it's used to do, as verb phrases, one per line: {catalog['choose_when']}"),
         f"- **Not for** {catalog['not_for']}.",
         "",
-        "## What you provide",
+        "## How to Run",
         "",
-        "**Before you start:**",
+        start + " The coding assistant works through it step by step, and asks before anything that costs money.",
+        "",
+        "> " + MARK.format("an example request"),
+        "",
+        f"Its progress is saved in `{state}`. Running it again in the same folder later picks up where it stopped.",
+        "",
+        "## Inputs",
+        "",
+        "**Prerequisites:**",
         "- " + MARK.format("the workspace features, tools, and privileges a user needs, in plain words"),
         "",
-        "**What it asks you.** It asks for the required inputs before anything else, and proposes defaults for the "
-        "rest.",
+        "**What it asks the user.** It asks for the required inputs before anything else, and proposes defaults for "
+        "the rest.",
         "",
         "| Input | Required | Default | What it is |",
         "|---|---|---|---|",
         *(f"| `{i['name']}` | Yes | — | {cell(i.get('notes') or i['ask'])} |" for i in required),
         *(f"| `{i['name']}` | No | {cell(i.get('default', '—'))} | {cell(i.get('notes', ''))} |" for i in optional),
         "",
-        "## What you get",
+        "## Outputs",
         "",
-        "**In your workspace:**",
+        "**In the workspace:**",
         "- " + MARK.format("each table, job, endpoint, app, or model the skill creates, with its name"),
         "",
-        "**In your working directory:**",
+        "**In the working directory:**",
         "",
         "```",
         "<workdir>/",
@@ -356,26 +364,20 @@ def overview_md(bp: dict) -> str:
         f"**When it's done.** The evaluation meets its thresholds: {floors}. "
         + MARK.format("what each threshold measures, in plain words"),
         "",
-        "## How it works",
+        "## How It Works",
         "",
         "| # | Step | What happens |",
         "|---|---|---|",
-        "| 00 | Preflight | Asks for the required inputs, checks the tools and your privileges, and gets your "
-        "go-ahead on cost |",
+        "| 00 | Preflight | Asks for the required inputs, checks the tools and the user's privileges, and gets the "
+        "user's go-ahead on cost |",
         *(f"| {m['id'][:2]} | {cell(m['title'])} | {cell(m['produces'])} |" for m in bp["modules"][1:]),
         "",
         "Each step ends with a check that must pass before the next one starts.",
         "",
-        "## Before it acts",
+        "### Preflight Checks and Guardrails",
         "",
         "It asks before: " + "; ".join(billable) + ". It never deletes anything without a separate confirmation that "
-        "names it, and grants access only to the people you name.",
-        "",
-        "## Running it",
-        "",
-        "> " + MARK.format("an example request"),
-        "",
-        f"Its progress is saved in `{state}`. Run it again in the same folder later to pick up where it stopped.",
+        "names it, and grants access only to the people the user names.",
         "",
     ])
 

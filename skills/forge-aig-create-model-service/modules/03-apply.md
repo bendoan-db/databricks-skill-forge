@@ -44,7 +44,7 @@ It grants only what each principal is missing, then reads it back. `not_visible_
 Neither script deletes or revokes anything. When the user asks to:
 
 - **Revoke access:** show the exact principal, privilege, and service, and get a confirmation naming them. Revoke `EXECUTE` on the service, not shared `USE CATALOG` or `USE SCHEMA`. **Load:** `databricks-unity-gateway` `references/permissions.md` (revoking access).
-- **Delete a service,** for example to move its inference table: show the service with `get-model-service`, say that its callers stop working, and get a separate confirmation naming it. Deleting doesn't drop its inference table. **Load:** `databricks-unity-gateway` `references/model-services.md` (deleting a model service).
+- **Delete a service,** for example to move its inference table: show the service with `get-model-service` (in a notebook, its row in SKILL.md, In a notebook), say that its callers stop working, and get a separate confirmation naming it. Deleting doesn't drop its inference table. **Load:** `databricks-unity-gateway` `references/model-services.md` (deleting a model service).
 
 Then take it out of the YAML files too, so the next apply doesn't create or grant it again.
 

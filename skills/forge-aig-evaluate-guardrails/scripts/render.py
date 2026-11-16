@@ -2,17 +2,27 @@
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6"]
 # ///
-"""Render forge-evaluate-guardrails's job bundle from guardrail-eval.json (forge-evaluate-guardrails modules 01, 03).
+"""Render the guardrail evaluation's job bundle from guardrail-eval.json (forge-aig-evaluate-guardrails modules 01, 03).
 
     uv run <skill>/scripts/render.py --state <workdir>/guardrail-eval.json
 
 Writes <workdir>/<name>/databricks.yml from scripts/databricks.yml, filling each whole-value <key> from the state
-file, and <name>/src/eval_config.json, the settings the job's notebooks read (the dataset, the model service, the
-policies it must have, and the run settings). It copies the job's notebooks to <name>/src/. Both rendered files carry
+file, and <name>/src/eval_config.json, the settings the job's notebooks read (the dataset, the model services and the
+policies each must have, and the run settings). It copies the job's notebooks to <name>/src/. Both rendered files carry
 a checksum: if one was edited by hand since the last render, nothing is written unless you pass --force. Each copy
 carries a checksum line too: a copy changed since it was written, such as a notebook edited in the workspace and
 exported back (module 01), is kept and listed under kept_edited, and --force replaces it with the skill's version.
-Validates the whole state file first and reports every problem at once. Prints a JSON summary.
+
+The model services are forge-aig-create-model-service's: it creates them, and its aig-model-services.json and the
+model-services.yaml and service-policies.yaml in its config_dir describe them. This reads those files at render time,
+and never writes them, so the evaluation can't drift from what was applied. Each service in `model_services` must be
+in model-services.yaml, named <prefix>_..., not granted in permissions.yaml, and carry only policies that block, since
+a policy that only logs or redacts leaves no verdict in the reply. Validates everything first and reports every problem
+at once. Prints a JSON summary, with warnings about services that keep an inference table or rate limits.
+
+`runtime` is where both skills run, recorded once in module 00, and it must be the same in both state files. Locally,
+the bundle's target uses the CLI profile; in Genie Code in a notebook (runtime workspace) it has none, since job.py
+deploys the job as the notebook's user, and a deploy from the workspace uses the workspace it's in.
 """
 
 import argparse
@@ -23,7 +33,7 @@ from pathlib import Path
 
 import yaml
 
-SKILL = "forge-evaluate-guardrails"
+SKILL = "forge-aig-evaluate-guardrails"
 STATE_FILE = "guardrail-eval.json"
 SCRIPTS = Path(__file__).resolve().parent
 JOB_FILES = ["load_prompts.py", "run_eval.py"]  # the notebooks the job runs
@@ -41,10 +51,12 @@ BUNDLE_NAME_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 PREFIX_RE = re.compile(r"^[a-z0-9_]+$")
 DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 VOLUME_FILE_RE = re.compile(r"^/Volumes/[^/]+/[^/]+/[^/]+/.+")
-# The built-in guardrails this skill evaluates, in rank order: state key -> service policy name.
-POLICIES = {"sensitive_data": "sensitive_data_detection", "unsafe_content": "unsafe_content_detection",
-            "jailbreak": "jailbreak_detection"}
-LLM_GUARDRAILS = ("unsafe_content", "jailbreak")  # these run on an evaluator model service
+FILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+PROFILE_BLOCK_RE = re.compile(r"(?ms)^[ \t]*# >>> profile\b[^\n]*\n(.*?)^[ \t]*# <<< profile[^\n]*\n")
+RUNTIMES = ("local", "workspace")
+SERVICES_STATE = "aig-model-services.json"  # forge-aig-create-model-service's state file, in <workdir>
+APPLIED = "03-apply"  # its module that creates the services
+MAX_SERVICES = 10  # each service gets every prompt, so the cost of a run grows with each one
 DEFAULT_DATASETS = ("aegis2", "toxicchat")
 FORMATS = ("csv", "json", "jsonl", "parquet")
 TARGETS = {"recall", "precision", "f1", "accuracy", "fp_rate"}  # fp_rate is a ceiling, the others floors
@@ -104,13 +116,23 @@ def dataset_errors(dataset) -> list[str]:
     return errors
 
 
+def runtime_errors(state: dict) -> list[str]:
+    """Problems with where the skill runs: `local`, with a CLI profile, or `workspace`, Genie Code in a notebook."""
+    runtime = state.get("runtime", "local")
+    if runtime not in RUNTIMES:
+        return [f"runtime={runtime!r}: local or workspace (module 00)"]
+    if runtime == "local" and not state.get("profile"):
+        return ["profile is missing or empty: locally, every command uses the CLI profile"]
+    return []
+
+
 def load_state(path: Path) -> dict:
     if not path.is_file():
         raise SystemExit(f"{path} not found. Module 00 writes it; run preflight first.")
     state = json.loads(path.read_text())
-    errors = [f"{key} is missing or empty" for key in ("profile", "catalog", "schema", "prefix", "name", "dataset",
-                                                       "model_service", "guardrails", "experiment")
-              if not state.get(key)]
+    errors = runtime_errors(state) + [
+        f"{key} is missing or empty" for key in ("catalog", "schema", "prefix", "name", "dataset", "model_services",
+                                                 "experiment") if not state.get(key)]
     for key in ("catalog", "schema"):
         if state.get(key) and not NAME_RE.match(str(state[key])):
             errors.append(f"{key}={state[key]!r}: use letters, digits, '_' or '-'")
@@ -118,25 +140,25 @@ def load_state(path: Path) -> dict:
         errors.append(f"prefix={state['prefix']!r}: use lowercase letters, digits, and '_'")
     if state.get("name") and not BUNDLE_NAME_RE.match(str(state["name"])):
         errors.append(f"name={state['name']!r}: use at most 40 characters from [a-z0-9-]")
-    if state.get("model_service") and not three_part(state["model_service"]):
-        errors.append(f"model_service={state['model_service']!r}: use <catalog>.<schema>.<service>")
-    if state.get("base_model_service") and not three_part(state["base_model_service"]):
-        errors.append(f"base_model_service={state['base_model_service']!r}: use <catalog>.<schema>.<service>, such as "
-                      "system.ai.claude-sonnet-5-5")
+    services = state.get("model_services")
+    if services:
+        if not isinstance(services, list) or len(set(map(str, services))) != len(services):
+            errors.append(f"model_services={services!r}: a list of three-part names, each once")
+        elif len(services) > MAX_SERVICES:
+            errors.append(f"model_services lists {len(services)}: at most {MAX_SERVICES}, since each gets every prompt")
+        else:
+            for name in services:
+                if not three_part(name):
+                    errors.append(f"model_services: {name!r}: use <catalog>.<schema>.<service>")
+                elif state.get("prefix") and not str(name).rsplit(".", 1)[1].startswith(f"{state['prefix']}_"):
+                    errors.append(f"model_services: {name} isn't named {state['prefix']}_...: the evaluation measures "
+                                  "only services of its own, so evaluate a copy named that way (module 00, step 1)")
+    if "services_state" in state and not FILE_NAME_RE.match(str(state["services_state"])):
+        errors.append(f"services_state={state['services_state']!r}: a file name in the working directory")
     if state.get("experiment") and not str(state["experiment"]).startswith("/"):
         errors.append(f"experiment={state['experiment']!r}: a workspace path, such as /Users/<user>/guardrail-eval")
     if state.get("dataset"):
         errors += dataset_errors(state["dataset"])
-    guardrails = state.get("guardrails")
-    if guardrails:
-        if not isinstance(guardrails, list) or set(guardrails) - set(POLICIES) or len(set(guardrails)) != len(guardrails):
-            errors.append(f"guardrails={guardrails!r}: a list from {list(POLICIES)}, each once")
-        else:
-            evaluators = state.get("evaluators") or {}
-            for g in guardrails:
-                if g in LLM_GUARDRAILS and not three_part(evaluators.get(g, "")):
-                    errors.append(f"evaluators.{g} is missing: the evaluator model service it runs on, such as "
-                                  "system.ai.gpt-oss-20b")
     for key, (_, low, high) in NUMBERS.items():
         value = state.get(key, NUMBERS[key][0])
         if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
@@ -156,22 +178,102 @@ def load_state(path: Path) -> dict:
 
 
 def bundle_values(state: dict) -> dict[str, str]:
-    """Each whole-value <key> in scripts/databricks.yml, and its value from the state file."""
-    return {
+    """Each whole-value <key> in scripts/databricks.yml, and its value from the state file. The profile only locally:
+    in a notebook the target has none."""
+    values = {
         "bundle_name": state["name"],
-        "profile": state["profile"],
         "catalog": state["catalog"],
         "schema": state["schema"],
         "prefix": state["prefix"],
     }
+    if state.get("runtime", "local") == "local":
+        values["profile"] = state["profile"]
+    return values
 
 
-def job_config(state: dict) -> dict:
+def load_yaml(path: Path) -> tuple[dict | None, str | None]:
+    if not path.is_file():
+        return None, f"{path} not found"
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as e:
+        return None, f"{path} isn't valid YAML: {e}"
+    return (data, None) if isinstance(data, dict) else (None, f"{path}: the top level must be a mapping")
+
+
+def granted(permissions: dict) -> set[str]:
+    """Every model service permissions.yaml grants to someone."""
+    return {str(name) for section in ("groups", "users") for entry in permissions.get(section) or []
+            if isinstance(entry, dict) for name in entry.get("model_services") or []}
+
+
+def evaluated_services(state: dict, workdir: Path) -> tuple[list[dict], list[str], list[str]]:
+    """The services to evaluate, each {name, policies} with the policies in the order listed, from
+    forge-aig-create-model-service's files in <workdir>; and the errors and warnings found. Reads only."""
+    path = workdir / str(state.get("services_state", SERVICES_STATE))
+    if not path.is_file():
+        return [], [f"{path} not found: run forge-aig-create-model-service in this folder first "
+                    "(module 00, step 7)"], []
+    other = json.loads(path.read_text())
+    errors, warnings = [], []
+    if other.get("runtime", "local") != state.get("runtime", "local"):
+        errors.append(f"{path.name} has runtime {other.get('runtime', 'local')!r} and {STATE_FILE} "
+                      f"{state.get('runtime', 'local')!r}: both skills run in the same place, so record the same "
+                      "runtime in both (module 00)")
+    parts = other.get("parts") or []
+    if not {"model_services", "service_policies"} <= set(parts):
+        errors.append(f"{path.name}: parts={parts!r} needs model_services and service_policies, so the services get "
+                      "their policies")
+    if APPLIED not in (other.get("completed") or []):
+        errors.append(f"{path.name}: forge-aig-create-model-service hasn't applied the services ({APPLIED} isn't in "
+                      "its completed): resume it")
+    folder = workdir / str(other.get("config_dir") or "")
+    cfg, problem = load_yaml(folder / "model-services.yaml")
+    policies_cfg, policy_problem = load_yaml(folder / "service-policies.yaml")
+    errors += [p for p in (problem, policy_problem) if p]
+    if errors:
+        return [], errors, warnings
+    defined = {p.get("name"): p for p in policies_cfg.get("service_policies") or [] if isinstance(p, dict)}
+    listed = {f"{cfg.get('catalog')}.{cfg.get('schema')}.{s.get('name')}": s
+              for s in cfg.get("model_services") or [] if isinstance(s, dict)}
+    shared = granted(load_yaml(folder / "permissions.yaml")[0] or {}) if "grants" in parts else set()
+    services = []
+    for name in state["model_services"]:
+        s = listed.get(name)
+        if s is None:
+            errors.append(f"{name} isn't in {folder.name}/model-services.yaml: add the evaluation's entry with "
+                          "forge-aig-create-model-service (module 00, step 7)")
+            continue
+        policies = [str(p) for p in s.get("service_policies") or []]
+        if not policies:
+            errors.append(f"{name} lists no service_policies, so there's nothing to evaluate")
+        for policy in policies:
+            p = defined.get(policy)
+            if p is None:
+                errors.append(f"{name}: {policy} isn't defined in service-policies.yaml")
+            elif p.get("mode", "block") != "block":
+                errors.append(f"{name}: {policy} has mode: {p.get('mode')}, which doesn't block, so its verdicts can't "
+                              "be measured. Leave it out of the evaluation's copy")
+            elif p.get("type") == "detect_sensitive_data" and p.get("action", "block") != "block":
+                errors.append(f"{name}: {policy} redacts instead of blocking, so its verdicts can't be measured. Leave "
+                              "it out of the evaluation's copy")
+        if name in shared:
+            errors.append(f"{name} is granted to others in permissions.yaml, and the evaluation measures only a copy "
+                          "of its own: take it out of permissions.yaml")
+        if s.get("enable_inference_table", True):
+            warnings.append(f"{name} logs to an inference table, a second copy of the harmful prompts: set "
+                            "enable_inference_table: false on it")
+        if s.get("enable_rate_limits", True):
+            warnings.append(f"{name} has rate limits, which slow a run: set enable_rate_limits: false on it")
+        services.append({"name": name, "policies": policies})
+    return services, errors, warnings
+
+
+def job_config(state: dict, services: list[dict]) -> dict:
     """eval_config.json: what the job's notebooks read, with defaults filled in."""
     return {
         "dataset": state["dataset"],
-        "model_service": state["model_service"],
-        "policies": [name for key, name in POLICIES.items() if key in state["guardrails"]],
+        "services": services,
         **{key: state.get(key, default) for key, (default, _, _) in NUMBERS.items()},
         "experiment": state["experiment"],
     }
@@ -229,6 +331,10 @@ def copy_edited(path: Path) -> bool:
 def render_bundle(values: dict[str, str]) -> str:
     template = (SCRIPTS / "databricks.yml").read_text()
     body = template[template.index("bundle:") :]  # drop the template's instructions
+    if not PROFILE_BLOCK_RE.search(body):
+        raise SystemExit("databricks.yml template has no # >>> profile block")
+    # Locally the target keeps its profile; in a notebook (no profile in values) the block goes.
+    body = PROFILE_BLOCK_RE.sub(lambda m: m.group(1) if "profile" in values else "", body)
     used = set()
 
     def fill(match: re.Match) -> str:
@@ -244,9 +350,13 @@ def render_bundle(values: dict[str, str]) -> str:
 
     parsed = yaml.safe_load(body)
     got = {key: spec.get("default") for key, spec in parsed["variables"].items()}
-    got.update(bundle_name=parsed["bundle"]["name"], profile=parsed["targets"]["default"]["workspace"]["profile"])
+    target = parsed["targets"]["default"]
+    got.update(bundle_name=parsed["bundle"]["name"], profile=(target.get("workspace") or {}).get("profile"))
     if mismatched := sorted(key for key in values if got.get(key) != values[key]):
         raise SystemExit(f"Rendered databricks.yml doesn't round-trip {mismatched}")
+    if "profile" not in values and "workspace" in target:
+        raise SystemExit("Rendered databricks.yml names a workspace for its target, which a notebook's deploy "
+                         "doesn't use")
     jobs = parsed["resources"]["jobs"]
     if list(jobs) != ["guardrail_eval"]:
         raise SystemExit(f"Rendered databricks.yml has jobs {list(jobs)}")
@@ -270,11 +380,15 @@ def render_bundle(values: dict[str, str]) -> str:
 def main() -> None:
     args = parse_args()
     state = load_state(args.state)
+    workdir = args.state.resolve().parent
+    services, errors, warnings = evaluated_services(state, workdir)
+    if errors:
+        raise SystemExit(f"{args.state}: " + "; ".join(errors))
     values = bundle_values(state)
-    bundle = args.state.resolve().parent / values["bundle_name"]
+    bundle = workdir / values["bundle_name"]
     rendered = {
         bundle / "databricks.yml": with_header(render_bundle(values)),
-        bundle / "src" / "eval_config.json": config_json(job_config(state)),
+        bundle / "src" / "eval_config.json": config_json(job_config(state, services)),
     }
     copies = {bundle / "src" / name: mark_copy(name, (SCRIPTS / name).read_text()) for name in JOB_FILES}
 
@@ -284,7 +398,8 @@ def main() -> None:
             f"Edited by hand since the last render: {conflicts}. Move the change into {STATE_FILE} and re-render, "
             "or pass --force to overwrite (the hand edit is lost)."
         )
-    summary = {"written": [], "unchanged": [], "kept_edited": []}
+    summary = {"services": [s["name"] for s in services], "warnings": warnings, "written": [], "unchanged": [],
+               "kept_edited": []}
     for path, text in {**rendered, **copies}.items():
         if path.exists() and path.read_text() == text:
             summary["unchanged"].append(str(path))

@@ -2,21 +2,22 @@
 # requires-python = ">=3.11"
 # dependencies = ["databricks-sdk>=0.68"]
 # ///
-"""Report a forge-evaluate-guardrails evaluation run, and check it's complete enough to trust (module 03).
+"""Report a forge-aig-evaluate-guardrails evaluation run, and check it's complete enough to trust (module 03).
 
     uv run <skill>/scripts/evaluate.py --state <workdir>/guardrail-eval.json [--run-id <id>]
 
 Reads the run's rows in <catalog>.<schema>.<prefix>_metrics through the SQL warehouse in the state file (by default
-the latest run with mode `full`), and prints:
+the latest run with mode `full`), and prints, with several model services, a table comparing them first, then for each:
 - overall and per dataset: recall, precision, false-positive rate, F1, accuracy, errors, and latency;
 - per policy: the blocks it made, and how many were false positives;
 - the 10 categories with the lowest recall;
 - each of the user's `targets`, met or missed.
 
-THRESHOLDS gates the run itself, not the guardrails: the share of prompts that got a verdict from the gateway
-(`scored_rate`; an ERROR row, a call that failed after its retries, has none). Below the floor the metrics aren't
-trustworthy, and the script exits with status 1. A missed target is reported, not a failure: the targets are the user's
-bar for the guardrails, and this skill measures them rather than tuning them.
+THRESHOLDS gates the run itself, not the guardrails: for each service, the share of prompts that got a verdict from the
+gateway (`scored_rate`; an ERROR row, a call that failed after its retries, has none). Below the floor the metrics
+aren't trustworthy. A service in `model_services` that the run didn't evaluate fails too. Either way, the script exits
+with status 1. A missed target is reported, not a failure: the targets are the user's bar for the guardrails, and this
+skill measures them rather than tuning them.
 """
 
 import argparse
@@ -29,6 +30,28 @@ RATES = ("recall", "precision", "fp_rate", "f1", "accuracy")
 CEILINGS = {"fp_rate"}  # a target for these is a maximum; for the other rates, a minimum
 COUNTS = ("n", "expected_block", "expected_allow", "blocked", "tp", "fn", "fp", "tn", "errors")
 NUMERIC = (*COUNTS, *RATES, "latency_p50_ms", "latency_p95_ms")
+UNNAMED = "(the model service)"  # rows written before services were compared have no model_service
+RUNTIMES = ("local", "workspace")
+
+
+def runtime_errors(state: dict) -> list[str]:
+    """Problems with where the skill runs: `local`, with a CLI profile, or `workspace`, Genie Code in a notebook."""
+    runtime = state.get("runtime", "local")
+    if runtime not in RUNTIMES:
+        return [f"runtime={runtime!r}: local or workspace (module 00)"]
+    if runtime == "local" and not state.get("profile"):
+        return ["profile is missing or empty: locally, every command uses the CLI profile"]
+    return []
+
+
+def workspace_client(state: dict):
+    """The workspace: as the CLI profile locally, or with runtime workspace as the notebook's user, which only the
+    notebook's own Python process can sign in as (so the modules run scripts with forge_run, not a subprocess)."""
+    from databricks.sdk import WorkspaceClient
+
+    if state.get("runtime") == "workspace":
+        return WorkspaceClient()
+    return WorkspaceClient(profile=state["profile"])
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +63,15 @@ def parse_args() -> argparse.Namespace:
 
 def overall(rows: list[dict]) -> dict | None:
     return next((r for r in rows if r.get("breakdown") == "overall"), None)
+
+
+def by_service(rows: list[dict]) -> dict[str, list[dict]]:
+    """The run's metrics rows by model service, in the order they come. Rows without one, from a table written before
+    services were compared, are one group."""
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r.get("model_service") or UNNAMED, []).append(r)
+    return out
 
 
 def scored_rate(row: dict) -> float | None:
@@ -82,13 +114,12 @@ def ms(value) -> str:
     return "-" if value is None else f"{value / 1000:.1f} s"
 
 
-def report(rows: list[dict], targets: dict | None) -> str:
-    """The run's report as text."""
+def service_report(rows: list[dict], targets: dict | None) -> list[str]:
+    """One service's part of the report."""
     lines = []
     head = overall(rows)
     if head:
-        lines.append(f"Run {head.get('run_id')} ({head.get('mode')}): {head.get('n')} prompts, {head.get('errors')} errors, "
-                     f"scored rate {pct(scored_rate(head))}")
+        lines.append(f"{head.get('n')} prompts, {head.get('errors')} errors, scored rate {pct(scored_rate(head))}")
     lines += ["", "| Dataset | Prompts | Recall | Precision | FP rate | F1 | Accuracy | Errors | p50 | p95 |",
               "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for r in [head] * bool(head) + [r for r in rows if r.get("breakdown") == "dataset"]:
@@ -110,7 +141,43 @@ def report(rows: list[dict], targets: dict | None) -> str:
         lines += ["", "| Target | Wanted | Measured | Met |", "|---|---:|---:|---|"]
         lines += [f"| {t['metric']} | {'≤' if t['kind'] == 'ceiling' else '≥'} {pct(t['target'])} | {pct(t['value'])} | "
                   f"{'yes' if t['met'] else 'no'} |" for t in checked]
+    return lines
+
+
+def report(rows: list[dict], targets: dict | None) -> str:
+    """The run's report as text: with several services, a table comparing them, then each service's part."""
+    groups = by_service(rows)
+    first = overall(rows) or {}
+    count = f"{len(groups)} model service" + ("s" if len(groups) != 1 else "")
+    lines = [f"Run {first.get('run_id')} ({first.get('mode')}), {count}"]
+    if len(groups) > 1:
+        lines += ["", "| Service | Prompts | Recall | Precision | FP rate | F1 | Errors | Scored | p50 |",
+                  "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+        for name, group in groups.items():
+            head = overall(group) or {}
+            lines.append(f"| {name} | {head.get('n')} | {pct(head.get('recall'))} | {pct(head.get('precision'))} | "
+                         f"{pct(head.get('fp_rate'))} | {pct(head.get('f1'))} | {head.get('errors')} | "
+                         f"{pct(scored_rate(head) if head else None)} | {ms(head.get('latency_p50_ms'))} |")
+    for name, group in groups.items():
+        lines += ["", f"### {name}", "", *service_report(group, targets)]
     return "\n".join(lines)
+
+
+def outcome(rows: list[dict], state: dict) -> dict:
+    """The gate and the targets, for each service: {services, thresholds_met, failures, targets_met}."""
+    groups = by_service(rows)
+    services, failures = {}, []
+    for name, group in groups.items():
+        missed = threshold_failures(overall(group))
+        checked = target_results(group, state.get("targets"))
+        services[name] = {"scored_rate": scored_rate(overall(group) or {}), "failures": missed,
+                          "targets_met": all(t["met"] for t in checked) if checked else None}
+        failures += [f"{name}: {f}" for f in missed]
+    failures += [f"{name} isn't in this run: run the evaluation again, so it covers every service in model_services"
+                 for name in state.get("model_services") or [] if name not in groups and UNNAMED not in groups]
+    met = [s["targets_met"] for s in services.values() if s["targets_met"] is not None]
+    return {"services": services, "thresholds_met": not failures, "failures": failures,
+            "targets_met": all(met) if met else None}
 
 
 def typed(row: dict) -> dict:
@@ -147,12 +214,11 @@ def main() -> None:
     if not args.state.is_file():
         sys.exit(f"{args.state} not found. Module 00 writes it; run preflight first.")
     state = json.loads(args.state.read_text())
-    missing = [k for k in ("profile", "catalog", "schema", "prefix", "warehouse_id") if not state.get(k)]
-    if missing:
-        sys.exit(f"{args.state}: {missing} missing; module 00 records them")
-    from databricks.sdk import WorkspaceClient
-
-    w = WorkspaceClient(profile=state["profile"])
+    errors = runtime_errors(state) + [f"{k} is missing or empty"
+                                      for k in ("catalog", "schema", "prefix", "warehouse_id") if not state.get(k)]
+    if errors:
+        sys.exit(f"{args.state}: " + "; ".join(errors) + " (module 00 records them)")
+    w = workspace_client(state)
     table = f"`{state['catalog']}`.`{state['schema']}`.`{state['prefix']}_metrics`"
     run_id = args.run_id
     if not run_id:
@@ -166,11 +232,9 @@ def main() -> None:
     if not rows:
         sys.exit(f"No metrics for run {run_id} in {table}.")
     print(report(rows, state.get("targets")))
-    failures = threshold_failures(overall(rows))
-    targets = target_results(rows, state.get("targets"))
-    print(json.dumps({"run_id": run_id, "scored_rate": scored_rate(overall(rows) or {}), "thresholds_met": not failures,
-                      "failures": failures, "targets_met": all(t["met"] for t in targets) if targets else None}))
-    sys.exit(1 if failures else 0)
+    result = outcome(rows, state)
+    print(json.dumps({"run_id": run_id, **result}))
+    sys.exit(0 if result["thresholds_met"] else 1)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@
     uv run <skill>/scripts/check_access.py --state <workdir>/aig-model-services.json            # preflight
     uv run <skill>/scripts/check_access.py --state <workdir>/aig-model-services.json --config   # what the files name
 
-"You" is the CLI profile's identity, the one the other scripts run as. Without --config (module 00, before the YAML
+"You" is the identity the other scripts run as: the CLI profile's, or in Genie Code (runtime workspace) the notebook's
+user. Without --config (module 00, before the YAML
 files exist) it checks the target schema for each part in `parts`:
 - model_services: USE CATALOG on the catalog; USE SCHEMA and CREATE SERVICE on the schema; CREATE TABLE, for
   inference tables.
@@ -39,6 +40,27 @@ SCIM_ME = "/api/2.0/preview/scim/v2/Me"
 PARTS = ("model_services", "service_policies", "grants")
 LLM_TYPES = ("block_unsafe_content", "block_jailbreak", "block_hallucination", "llm_judge")
 NOT_IN_ALL = ("MANAGE", "READ_METADATA")
+RUNTIMES = ("local", "workspace")
+
+
+def runtime_errors(state: dict) -> list[str]:
+    """Problems with where the skill runs: `local`, with a CLI profile, or `workspace`, Genie Code in a notebook."""
+    runtime = state.get("runtime", "local")
+    if runtime not in RUNTIMES:
+        return [f"runtime={runtime!r}: local or workspace (module 00)"]
+    if runtime == "local" and not state.get("profile"):
+        return ["profile is missing or empty: locally, every command uses the CLI profile"]
+    return []
+
+
+def workspace_client(state: dict):
+    """The workspace: as the CLI profile locally, or with runtime workspace as the notebook's user, which only the
+    notebook's own Python process can sign in as (so the modules run scripts with forge_run, not a subprocess)."""
+    from databricks.sdk import WorkspaceClient
+
+    if state.get("runtime") == "workspace":
+        return WorkspaceClient()
+    return WorkspaceClient(profile=state["profile"])
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,7 +74,8 @@ def load_state(path: Path) -> dict:
     if not path.is_file():
         raise SystemExit(f"{path} not found. Module 00 writes it; run preflight first.")
     state = json.loads(path.read_text())
-    errors = [f"{key} is missing or empty" for key in ("profile", "catalog", "schema", "parts") if not state.get(key)]
+    errors = runtime_errors(state) + [f"{key} is missing or empty" for key in ("catalog", "schema", "parts")
+                                      if not state.get(key)]
     if set(state.get("parts") or []) - set(PARTS):
         errors.append(f"parts={state['parts']!r}: any of {list(PARTS)}")
     if errors:
@@ -337,9 +360,7 @@ def check(ctx: Context, item: dict) -> dict:
 def main() -> None:
     args = parse_args()
     state = load_state(args.state)
-    from databricks.sdk import WorkspaceClient
-
-    client = WorkspaceClient(profile=state["profile"]).api_client
+    client = workspace_client(state).api_client
     folder = args.state.resolve().parent / str(state.get("config_dir") or "ai-gateway")
     needs = config_needs(client, state, folder) if args.config else preflight_needs(state)
     ctx = Context(client)

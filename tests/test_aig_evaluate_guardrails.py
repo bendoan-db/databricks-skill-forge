@@ -1,4 +1,4 @@
-"""Checks for forge-evaluate-guardrails' job notebooks (load_prompts.py, run_eval.py) that need no workspace."""
+"""Checks for forge-aig-evaluate-guardrails' job notebooks (load_prompts.py, run_eval.py) that need no workspace."""
 
 import argparse
 import json
@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from conftest import load_script
 
-SKILL = "forge-evaluate-guardrails"
+SKILL = "forge-aig-evaluate-guardrails"
 load_prompts = load_script(SKILL, "load_prompts")
 run_eval = load_script(SKILL, "run_eval")
 
@@ -199,15 +199,25 @@ def test_job_widgets_become_flags():
     assert (args.catalog, args.prefix, args.mode, args.run_id) == ("main", "guard", "full", "")
 
 
+CONFIG = {"_rendered_by": "render.py", "services": [{"name": "main.eval.guard_model", "policies": ["eval_jailbreak"]}],
+          "concurrency": 8, "max_tokens": 64, "sample_size": 100, "settle_minutes": 5, "experiment": "guardrail-eval",
+          "dataset": {"source": "default"}}
+
+
 def test_config_is_checked(tmp_path):
     path = tmp_path / "eval_config.json"
-    path.write_text(json.dumps({"_rendered_by": "render.py", "model_service": "main.eval.guard_model",
-                                "policies": ["sensitive_data_detection"], "concurrency": 8, "max_tokens": 64,
-                                "sample_size": 100, "settle_minutes": 5, "experiment": "guardrail-eval",
-                                "dataset": {"source": "default"}}))
+    path.write_text(json.dumps(CONFIG))
     assert "_rendered_by" not in run_eval.load_config(path)
-    path.write_text(json.dumps({"model_service": "guard_model", "policies": []}))
-    with pytest.raises(SystemExit, match="policies is missing.*model_service='guard_model'"):
+    path.write_text(json.dumps({**CONFIG, "services": [{"name": "guard_model", "policies": ["x"]},
+                                                       {"name": "main.eval.other", "policies": []}]}))
+    with pytest.raises(SystemExit, match="'guard_model'.*needs a name.*main.eval.other needs policies"):
+        run_eval.load_config(path)
+    twice = {"name": "main.eval.guard_model", "policies": ["x"]}
+    path.write_text(json.dumps({**CONFIG, "services": [twice, twice]}))
+    with pytest.raises(SystemExit, match="listed twice"):
+        run_eval.load_config(path)
+    path.write_text(json.dumps({**CONFIG, "services": []}))
+    with pytest.raises(SystemExit, match="services is missing"):
         run_eval.load_config(path)
 
 
@@ -219,7 +229,51 @@ def test_readiness_needs_the_configured_guardrails_and_settling():
     problem, wait = run_eval.readiness(service, ["jailbreak_detection"], 5, now)
     assert problem is None and wait == pytest.approx(180)
     problem, _ = run_eval.readiness(service, ["jailbreak_detection", "sensitive_data_detection"], 5, now)
-    assert "guardrail_service.py --apply" in problem
+    assert "apply forge-aig-create-model-service again" in problem
+
+
+class Services:
+    """A stand-in WorkspaceClient that reads model services."""
+
+    def __init__(self, services):
+        self.api_client = self
+        self.services = services
+
+    def do(self, method, path, body=None):
+        name = path.rsplit("/", 1)[1]
+        if name not in self.services:
+            raise type("NotFound", (Exception,), {})(name)
+        return self.services[name]
+
+
+def test_every_service_must_be_ready_before_anything_is_sent():
+    ready = {"name": "main.eval.a", "config": {"service_policies": [{"name": "p"}]}}
+    w = Services({"main.eval.a": ready, "main.eval.b": {**ready, "name": "main.eval.b"}})
+    live = run_eval.wait_until_ready(w, [{"name": "main.eval.a", "policies": ["p"]},
+                                         {"name": "main.eval.b", "policies": ["p"]}], 0)
+    assert list(live) == ["main.eval.a", "main.eval.b"]
+    with pytest.raises(SystemExit, match="main.eval.c doesn't exist.*main.eval.b has the guardrails"):
+        run_eval.wait_until_ready(w, [{"name": "main.eval.c", "policies": ["p"]},
+                                      {"name": "main.eval.b", "policies": ["q"]}], 0)
+
+
+class FakeSpark:
+    """Records SQL statements; a table's columns are what `columns` says."""
+
+    def __init__(self, columns):
+        self.columns, self.statements = columns, []
+
+    def sql(self, statement, args=None):
+        self.statements.append(statement)
+        return argparse.Namespace(columns=self.columns.get(statement.split(" FROM ")[-1].split()[0], []))
+
+
+def test_tables_from_before_services_were_compared_get_the_new_column():
+    old_metrics = [c.split()[0] for c in run_eval.METRICS_DDL.split(", ") if not c.startswith("model_service")]
+    spark = FakeSpark({"r": run_eval.RESULT_COLUMNS, "m": old_metrics})
+    run_eval.ensure_tables(spark, "r", "m")
+    altered = [s for s in spark.statements if s.startswith("ALTER")]
+    assert altered == ["ALTER TABLE m ADD COLUMNS (model_service STRING)"]
 
 
 # --- run_eval.py: the gateway call ------------------------------------------------------------------------------
@@ -315,6 +369,19 @@ def result(dataset, expected, result_class, policy=None, categories=(), latency=
             "blocked": blocked, "blocking_policy": policy, "result_class": result_class, "latency_ms": latency}
 
 
+def test_each_prompt_goes_to_each_service():
+    reply = {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
+    w = argparse.Namespace(api_client=argparse.Namespace(do=lambda method, path, body=None: reply))
+    batches = []
+    prompts = [{"prompt_id": f"p{i}", "dataset": "aegis2", "prompt": "x", "expected": "ALLOW", "categories": []}
+               for i in range(3)]
+    todo = [(service, p) for service in ("main.eval.a", "main.eval.b") for p in prompts]
+    sent = run_eval.send_all(w, {"run_id": "eval-sample-202611021200", "mode": "sample"}, todo, 4, 16, batches.append)
+    rows = [r for batch in batches for r in batch]
+    assert sent == 6 and sorted((r["model_service"], r["prompt_id"]) for r in rows) == sorted(
+        (s, p["prompt_id"]) for s, p in todo)
+
+
 def test_compute_scores_overall_datasets_categories_and_policies():
     rows = [
         result("aegis2", "BLOCK", "TRUE_POSITIVE", "unsafe_content_detection", ["Violence"], 100),
@@ -343,7 +410,28 @@ def test_compute_scores_overall_datasets_categories_and_policies():
     assert [(m["group_name"], m["blocked"], m["tp"], m["fp"]) for m in policies] == [
         ("unsafe_content_detection", 2, 1, 1), ("jailbreak_detection", 1, 1, 0)]
     assert policies[0]["recall"] is None and policies[0]["fn"] is None
+    added = {"run_id", "run_ts", "mode", "model_service"}  # by save_metrics and compute_all
+    assert all(set(run_eval.METRIC_COLUMNS) - added <= set(m) for m in metrics)
+
+
+def test_compute_all_scores_each_service_on_its_own():
+    rows = [dict(result("aegis2", "BLOCK", "TRUE_POSITIVE", "eval_jailbreak"), model_service="main.eval.a"),
+            dict(result("aegis2", "BLOCK", "FALSE_NEGATIVE"), model_service="main.eval.b"),
+            dict(result("aegis2", "BLOCK", "TRUE_POSITIVE", "x"), model_service="main.eval.gone")]
+    metrics = run_eval.compute_all(rows, ["main.eval.b", "main.eval.a"])
+    overall = [(m["model_service"], m["recall"]) for m in metrics if m["breakdown"] == "overall"]
+    assert overall == [("main.eval.b", 0.0), ("main.eval.a", 1.0)]  # the config's order; a dropped service left out
     assert all(set(run_eval.METRIC_COLUMNS) - {"run_id", "run_ts", "mode"} <= set(m) for m in metrics)
+
+
+def test_mlflow_params_name_the_service_and_its_policies():
+    service = {"config": {"service_policies": [
+        {"name": "eval_judge", "rank": 1, "handler": "system.ai.invoke_llm_judge",
+         "options": {"dry_run": "false", "instruction": "Flag x " * 200, "model_service": "model-services/m"}}]}}
+    config = {**CONFIG, "services": [{"name": "main.eval.a", "policies": ["eval_judge"]}]}
+    params = run_eval.mlflow_params(config, {"mode": "full"}, "main.eval.a", service, 400)
+    assert params["model_service"] == "main.eval.a" and params["services"] == 1 and params["prompts"] == 400
+    assert "instruction" not in params["policy.eval_judge"] and "invoke_llm_judge" in params["policy.eval_judge"]
 
 
 def test_mlflow_metric_names():

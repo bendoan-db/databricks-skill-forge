@@ -20,9 +20,10 @@ updates each service with only the fields that differ, sets its policies, and re
 failed service doesn't stop the others; the run exits 1 and lists them. Nothing is deleted or revoked. With
 `service_policies` not in `parts`, policies already on a service are left as they are.
 
-Every call is REST with the CLI profile: the typed CLI and SDK drop config.service_policies, and the SDK's Privilege
-enum lacks CREATE_SERVICE. Attaching policies by API isn't documented (the docs show the UI); the source and
-forge-evaluate-guardrails use the PATCH with update_mask=config.service_policies, as the UI does.
+Every call is REST, as the CLI profile locally or as the notebook's user in Genie Code (runtime workspace): the typed
+CLI and SDK drop config.service_policies, and the SDK's Privilege enum lacks CREATE_SERVICE. Attaching policies by API
+isn't documented (the docs show the UI); the source uses the PATCH with update_mask=config.service_policies, as the UI
+does. forge-aig-evaluate-guardrails creates the services it measures through this script.
 """
 
 import argparse
@@ -46,6 +47,27 @@ POLICY_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")  # a SQL policy's name is its fu
 PLACEHOLDER_RE = re.compile(r"<[^<>]+>")
 PARTS = ("model_services", "service_policies", "grants")
 PROVIDERS = ("databricks", "provisioned_throughput", "external")
+RUNTIMES = ("local", "workspace")
+
+
+def runtime_errors(state: dict) -> list[str]:
+    """Problems with where the skill runs: `local`, with a CLI profile, or `workspace`, Genie Code in a notebook."""
+    runtime = state.get("runtime", "local")
+    if runtime not in RUNTIMES:
+        return [f"runtime={runtime!r}: local or workspace (module 00)"]
+    if runtime == "local" and not state.get("profile"):
+        return ["profile is missing or empty: locally, every command uses the CLI profile"]
+    return []
+
+
+def workspace_client(state: dict):
+    """The workspace: as the CLI profile locally, or with runtime workspace as the notebook's user, which only the
+    notebook's own Python process can sign in as (so the modules run scripts with forge_run, not a subprocess)."""
+    from databricks.sdk import WorkspaceClient
+
+    if state.get("runtime") == "workspace":
+        return WorkspaceClient()
+    return WorkspaceClient(profile=state["profile"])
 MAX_DESTINATIONS = 10
 BUILTIN_TYPES = ("block_unsafe_content", "block_jailbreak", "block_hallucination", "detect_sensitive_data")
 POLICY_TYPES = (*BUILTIN_TYPES, "llm_judge", "sql")
@@ -86,7 +108,8 @@ def load_state(path: Path) -> dict:
     if not path.is_file():
         raise SystemExit(f"{path} not found. Module 00 writes it; run preflight first.")
     state = json.loads(path.read_text())
-    errors = [f"{key} is missing or empty" for key in ("profile", "config_dir", "parts") if not state.get(key)]
+    errors = runtime_errors(state) + [f"{key} is missing or empty" for key in ("config_dir", "parts")
+                                      if not state.get(key)]
     if set(state.get("parts") or []) - set(PARTS):
         errors.append(f"parts={state['parts']!r}: any of {list(PARTS)}")
     if errors:
@@ -643,9 +666,7 @@ def main() -> None:
     if problem or policy_problem:
         print(json.dumps({"errors": [x for x in (problem, policy_problem) if x]}, indent=2))
         sys.exit(1)
-    from databricks.sdk import WorkspaceClient
-
-    client = WorkspaceClient(profile=state["profile"]).api_client
+    client = workspace_client(state).api_client
     p = plan(client, state, cfg, policies_cfg)
     if p["errors"] or not args.apply:
         print(json.dumps(summary(p), indent=2))

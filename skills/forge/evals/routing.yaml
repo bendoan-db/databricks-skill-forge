@@ -84,17 +84,26 @@ cases:
 
   # Guardrail evaluation
   - prompt: "/forge How well do the AI Gateway guardrails block jailbreaks and toxic prompts? Measure it on a safety dataset"
-    expect: {handoff: forge-evaluate-guardrails}
+    expect: {handoff: forge-aig-evaluate-guardrails}
   - prompt: "/forge Evaluate the built-in service policies on our model service with our own red-team prompts in main.safety.redteam"
-    expect: {handoff: forge-evaluate-guardrails}
+    expect: {handoff: forge-aig-evaluate-guardrails}
   - prompt: "/forge guardrail evaluation"
-    expect: {handoff: forge-evaluate-guardrails}
+    expect: {handoff: forge-aig-evaluate-guardrails}
+  - prompt: "/forge Measure how well our custom LLM-judge guardrail catches jailbreaks, compared with the built-in Jailbreak policy"
+    expect: {handoff: forge-aig-evaluate-guardrails}
+  - prompt: "/forge Set up jailbreak and unsafe-content guardrails on a model service, then measure how well they block toxic prompts"
+    expect: {handoff: forge-aig-evaluate-guardrails}     # it runs forge-aig-create-model-service itself
+  - prompt: "/forge Which evaluator model makes the AI Gateway jailbreak guardrail block more attacks, gemma or gpt-oss?"
+    expect: {handoff: forge-aig-evaluate-guardrails}
+  - prompt: "/forge let's keep going"
+    workdir_files: [aig-model-services.json, guardrail-eval.json]
+    expect: {handoff: forge-aig-evaluate-guardrails, resume: true}
 
-  # Model services and access: setting up guardrails is this one, measuring them is forge-evaluate-guardrails
+  # Model services and access: setting up guardrails is this one, measuring them is forge-aig-evaluate-guardrails
   - prompt: "/forge Create a model service in AI Gateway that routes to Claude Sonnet, falls back to GPT OSS, and has per-user rate limits"
     expect: {handoff: forge-aig-create-model-service}
   - prompt: "/forge Put jailbreak and PII guardrails on our AI Gateway model services and give the data-science group access"
-    expect: {handoff: forge-aig-create-model-service}
+    expect: {handoff: forge-aig-create-model-service, offers_next: forge-aig-evaluate-guardrails}
   - prompt: "/forge Grant the analysts group and our app's service principal access to the model services in main.ai_gateway"
     expect: {handoff: forge-aig-create-model-service}
   - prompt: "/forge Add a custom guardrail to our model service that blocks prompts mentioning project codenames"

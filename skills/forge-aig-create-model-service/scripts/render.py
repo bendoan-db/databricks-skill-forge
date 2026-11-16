@@ -30,6 +30,17 @@ FILLED = re.compile(r"<(catalog|schema|default_evaluator|starter_policies)>")  #
 PLACEHOLDER_RE = re.compile(r"<[^<>]+>")
 DEFAULT_EVALUATOR = "system.ai.gpt-oss-20b"
 STARTER_POLICIES = "[jailbreak_detection, pii_redaction]"  # defined in the service-policies.yaml template
+RUNTIMES = ("local", "workspace")
+
+
+def runtime_errors(state: dict) -> list[str]:
+    """Problems with where the skill runs: `local`, with a CLI profile, or `workspace`, Genie Code in a notebook."""
+    runtime = state.get("runtime", "local")
+    if runtime not in RUNTIMES:
+        return [f"runtime={runtime!r}: local or workspace (module 00)"]
+    if runtime == "local" and not state.get("profile"):
+        return ["profile is missing or empty: locally, every command uses the CLI profile"]
+    return []
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,8 +53,8 @@ def load_state(path: Path) -> dict:
     if not path.is_file():
         raise SystemExit(f"{path} not found. Module 00 writes it; run preflight first.")
     state = json.loads(path.read_text())
-    errors = [f"{key} is missing or empty" for key in ("profile", "catalog", "schema", "config_dir", "parts")
-              if not state.get(key)]
+    errors = runtime_errors(state) + [f"{key} is missing or empty"
+                                      for key in ("catalog", "schema", "config_dir", "parts") if not state.get(key)]
     parts = state.get("parts") or []
     if not isinstance(parts, list) or set(parts) - set(TEMPLATES):
         errors.append(f"parts={parts!r}: any of {list(TEMPLATES)}")

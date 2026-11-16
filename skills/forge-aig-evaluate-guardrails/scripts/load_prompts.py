@@ -2,15 +2,15 @@
 # MAGIC %md
 # MAGIC # Load the evaluation prompts
 # MAGIC
-# MAGIC The `load_prompts` task of the forge-evaluate-guardrails evaluation job: it loads the safety dataset, the default
-# MAGIC Aegis 2.0 and ToxicChat test splits or the user's own, into the prompts table, one row per prompt labelled BLOCK or
-# MAGIC ALLOW. The job passes its settings as the widgets at the top; to run it by hand, fill them in. To keep a change you
-# MAGIC make here, export this notebook into the bundle's `src/` folder before the next deploy, which otherwise replaces
-# MAGIC it (module 01).
+# MAGIC The `load_prompts` task of the forge-aig-evaluate-guardrails evaluation job: it loads the safety dataset, the
+# MAGIC default Aegis 2.0 and ToxicChat test splits or the user's own, into the prompts table, one row per prompt
+# MAGIC labelled BLOCK or ALLOW. The job passes its settings as the widgets at the top; to run it by hand, fill them in.
+# MAGIC To keep a change you make here, export this notebook into the bundle's `src/` folder before the next deploy,
+# MAGIC which otherwise replaces it (module 01).
 
 # COMMAND ----------
 
-"""Load the safety dataset into <prefix>_prompts (forge-evaluate-guardrails module 01).
+"""Load the safety dataset into <prefix>_prompts (forge-aig-evaluate-guardrails module 01).
 
 First task of the evaluation job, before run_eval.py. It's a Databricks notebook: it runs as a serverless notebook
 task whose parameters arrive as widgets, or locally through Databricks Connect, with the same settings as flags:
@@ -259,7 +259,7 @@ def staged_path(volume_dir: str, key: str) -> str:
 
 
 def download(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "forge-evaluate-guardrails"})
+    request = urllib.request.Request(url, headers={"User-Agent": "forge-aig-evaluate-guardrails"})
     with urllib.request.urlopen(request, timeout=300) as response:  # noqa: S310 - a fixed https URL
         return response.read()
 
@@ -318,7 +318,8 @@ def stage_default(files, volume_dir: str, key: str, fetch=download) -> bytes:
     except (urllib.error.URLError, OSError) as e:
         raise SystemExit(
             f"Can't download {url} ({e}). If this compute can't reach huggingface.co, stage the file yourself: "
-            f"curl -L -o {Path(path).name} '{url}' && databricks fs cp {Path(path).name} dbfs:{path}"
+            f"curl -L -o {Path(path).name} '{url}' && databricks fs cp {Path(path).name} dbfs:{path}, or upload it to "
+            f"{Path(path).parent} in Catalog Explorer"
         ) from e
     if checksum_status(data, spec["sha256"]) != "ok":
         raise SystemExit(f"{url} downloaded with sha256 {sha256(data)}, not {spec['sha256']}: "
@@ -391,13 +392,16 @@ def main(argv: list[str] | None = None) -> None:
     data = [(r["prompt_id"], r["dataset"], r["prompt"], r["expected"], r["categories"], r["source_ref"], loaded_at)
             for r in rows]
     spark.createDataFrame(data, PROMPTS_DDL).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(table)
-    print(json.dumps({
+    result = json.dumps({
         "table": table.replace("`", ""),
         "prompts": len(rows),
         "block": sum(r["expected"] == BLOCK for r in rows),
         "allow": sum(r["expected"] == ALLOW for r in rows),
         "datasets": summary,
-    }))
+    })
+    print(result)
+    if "dbutils" in globals():  # the task's output, which `bundle run` and job.py status show
+        dbutils.notebook.exit(result)  # noqa: F821
 
 # COMMAND ----------
 

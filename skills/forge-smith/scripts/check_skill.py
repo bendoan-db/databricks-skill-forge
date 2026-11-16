@@ -37,7 +37,8 @@ RUN_CELL = ("# As a job's notebook task, the settings arrive as widgets; run as 
             '    main(notebook_argv(build_parser()) if "dbutils" in globals() else None)')
 NOTEBOOK_PATH = re.compile(r"^(?:\.\./)?src/([\w.-]+\.py)$")
 SHARED = ("scripts/check_base_skills.py", "scripts/write_readme.py")  # identical to templates/; listed under `shared`
-OVERVIEW_SECTIONS = ["What it's for", "What you provide", "What you get", "How it works"]
+OVERVIEW_SECTIONS = ["Purpose", "How to Run", "Inputs", "Outputs", "How It Works"]
+OVERVIEW_GUARDRAILS = "### Preflight Checks and Guardrails"  # a subsection of How It Works
 
 
 def frontmatter(text: str) -> dict:
@@ -235,27 +236,30 @@ def job_task_problems(folder: Path) -> list[str]:
 
 
 def overview_problems(text: str, ucs: dict, floors: dict) -> list[str]:
-    """README.md: the four sections in order, every input in its table (Required Yes or No), the state file, a row per
-    module, and each threshold as `≥ value`."""
+    """README.md: the five sections in order, with Preflight Checks and Guardrails under How It Works; every input in
+    the Inputs table (Required Yes or No); the state file and each threshold as `≥ value` in Outputs; and a row per
+    module in How It Works."""
     problems = []
     headings = [line[3:].strip() for line in text.splitlines() if line.startswith("## ")]
     if [h for h in headings if h in OVERVIEW_SECTIONS] != OVERVIEW_SECTIONS:
         problems.append(f"README.md sections must be, in order: {', '.join(OVERVIEW_SECTIONS)}")
-    provide, get, how = (section(text, s) for s in OVERVIEW_SECTIONS[1:])
+    provide, get, how = (section(text, s) for s in ("Inputs", "Outputs", "How It Works"))
+    if f"\n{OVERVIEW_GUARDRAILS}\n" not in f"\n{how}\n":
+        problems.append(f"README.md How It Works needs a {OVERVIEW_GUARDRAILS} subsection: what it asks before acting")
     inputs = ucs.get("inputs") or {}
     for kind, names in (("Yes", inputs.get("required") or []), ("No", inputs.get("optional") or [])):
         for name in names:
             if f"| `{name}` | {kind} |" not in provide:
-                problems.append(f"README.md What you provide: the inputs table needs a row | `{name}` | {kind} |")
+                problems.append(f"README.md Inputs: the inputs table needs a row | `{name}` | {kind} |")
     state_file = (ucs.get("catalog") or {}).get("state_file")
     if state_file and state_file not in get:
-        problems.append(f"README.md What you get never names the state file {state_file}")
+        problems.append(f"README.md Outputs never names the state file {state_file}")
     for module in ucs.get("modules") or []:
         if f"\n| {str(module.get('id', ''))[:2]} | " not in how:
-            problems.append(f"README.md How it works has no row for module {module.get('id')}")
+            problems.append(f"README.md How It Works has no row for module {module.get('id')}")
     for metric, floor in floors.items():
         if f"≥ {floor}" not in get:
-            problems.append(f"README.md What you get doesn't give {metric}'s threshold, ≥ {floor}")
+            problems.append(f"README.md Outputs doesn't give {metric}'s threshold, ≥ {floor}")
     return problems
 
 

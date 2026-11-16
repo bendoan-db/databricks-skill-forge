@@ -17,7 +17,7 @@ This file isn't published.
 | `skill/uaig-test-utilities/SKILL.md`: the wire format, destination names, the SQL constructs that don't transpile, the inference-table rule, troubleshooting | The validation in `deploy_services.py`, module 01's table of mistakes, module 02-04 troubleshooting, and `facts` |
 | The README's privilege table | `scripts/check_access.py`, module 00 step 6, and `facts` |
 | `skill/uaig-test-utilities/scripts/dry_run.py` (the notebooks against a fake client) | Not ported: the plan replaces it, and the tests' `FakeClient` plays the same part |
-| The notebooks' run-from-the-workspace path (`import-dir`, `jobs submit`) | Not ported. The owner chose local scripts (2026-11-10): control-plane calls need no job or compute, and the plan and access check run before any change, as `forge-evaluate-guardrails`' `guardrail_service.py` does |
+| The notebooks' run-from-the-workspace path (`import-dir`, `jobs submit`) | Not ported. The owner chose local scripts (2026-11-10): control-plane calls need no job or compute, and the plan and access check run before any change, as `forge-aig-evaluate-guardrails`' `guardrail_service.py` did |
 
 ## What changed, and why
 
@@ -41,7 +41,11 @@ This file isn't published.
 
 The router sent "a model service on AI Gateway, or its rate limits, budgets, or access" to `databricks-unity-gateway`. Now creating or changing model services, their guardrails, and access go to this skill. Budgets and alerts, MCP and model provider services, migration, and querying stay with the base skill. The routing case "Add rate limits and a budget to our model service" became a budget-only case.
 
-Setting up guardrails is this skill, and measuring them is `forge-evaluate-guardrails`. The routing cases include a custom-guardrail setup to keep them apart. The catalog entry has no `next`: the guardrail evaluation attaches built-ins to a service of its own, not the user's.
+Setting up guardrails is this skill, and measuring them is `forge-aig-evaluate-guardrails`. The routing cases include a custom-guardrail setup to keep them apart. Since 0.1.1 (2026-11-12), the evaluation builds on this skill: it lists it under `requires`, runs it to create the services it measures, passing the YAML entries it needs, and reads its state file and YAML files without writing them (`docs/aig-evaluate-guardrails-design.md`). So the catalog entry's `next` is the evaluation, which measures a copy of the user's services, never the services themselves. Module 00 confirms what a calling use case passed, module 01 writes its entries with the user's confirmation, and Done when returns to it.
+
+## Running in Genie Code in a notebook
+
+Since 0.2.0 (2026-11-12), the skill runs in Genie Code in a notebook as well as locally, with `forge-aig-evaluate-guardrails` (the decisions are in `docs/aig-evaluate-guardrails-design.md`, Running in Genie Code in a notebook). Module 00 records `runtime`, or takes it from the use case that runs this skill. `profile` is needed only locally, and every script signs in through `workspace_client(state)`. In a notebook, the scripts run in the notebook's own process through `forge_run`, since only that process is signed in as the notebook's user, and `evaluate.py` runs the two plan scripts with `runpy` rather than a subprocess, in both places. SKILL.md, In a notebook, maps each CLI command in the modules to its REST equivalent, including the revoke and delete in module 03, which still need their own confirmations.
 
 ## Not yet verified
 
@@ -56,7 +60,7 @@ Nothing has run in a workspace. The tests cover the following, offline:
 - the gate.
 
 These are assumptions:
-1. **Attaching policies by API.** The PATCH with `update_mask=config.service_policies` isn't documented. The source and `forge-evaluate-guardrails` use it, as the UI does.
+1. **Attaching policies by API.** The PATCH with `update_mask=config.service_policies` isn't documented. The source uses it, as the UI does, and so did `forge-aig-evaluate-guardrails` 0.1.0, which now creates its services through this skill.
 2. **The read-back shapes.** Destinations, rate limits, and policies read back with the fields as sent, plus fields of the server's own. The comparison is a subset match. A custom policy's handler may read back as its function's id, so it isn't compared.
 3. **REST paths.**
    - `GET /api/2.1/unity-catalog/model-provider-services/<name>`, by analogy with model services.
@@ -69,3 +73,5 @@ These are assumptions:
    - Whether an update can clear one (the plan warns).
    - Whether patching `config.inference_table` with an unchanged value is accepted.
 8. **The system.ai model names** in the templates (`system.ai.databricks-claude-sonnet-5-5`, `system.ai.databricks-claude-opus-5-5`, `system.ai.gpt-oss-120b`) exist in the sandbox's region.
+8. **In a notebook.** `WorkspaceClient()` in the notebook's process reaches every API the scripts call; listing model services takes `parent=schemas/<catalog>.<schema>` as a query parameter, as the CLI's flag does; and Genie Code stops for each go-ahead rather than letting its tool-approval classifier approve the step.
+

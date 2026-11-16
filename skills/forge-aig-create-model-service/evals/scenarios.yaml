@@ -81,3 +81,17 @@ scenarios:
     checks:
       - check_access.py exit == 1, naming CREATE SERVICE on the schema
       - no templates written, and nothing granted
+
+  - id: genie-code-notebook
+    description: The services-policies-grants build, run by Genie Code in a notebook, with no CLI or uv
+    harness:
+      client: genie-code                     # Genie Code in a notebook on serverless, with the skills installed by install_genie_code
+    inputs:
+      target_schema: <sandbox catalog>.ai_gateway
+      parts: [model_services, service_policies, grants]
+    fill: same as services-policies-grants
+    checks:
+      - aig-model-services.json runtime == workspace, with no profile
+      - <workdir> is the notebook's folder
+      - every script ran through forge_run, and no step called the databricks CLI or uv
+      - evaluate.py exit == 0

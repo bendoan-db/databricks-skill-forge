@@ -31,6 +31,8 @@ Offer two ways to do it, and follow the one they choose:
 - **They edit the files** in their editor, and tell you when they're done.
 - **They describe what they want,** and you write it into the files. Show them the diff and ask them to confirm it. Don't invent names, models, or groups they didn't give you: ask.
 
+**When another use case passed entries** (module 00, step 1), write those into the files the same way, adjusted to what the user said, show the diff, and get the user's confirmation. `forge-aig-evaluate-guardrails` passes the evaluation's services and its own policy definitions, named `eval_...`. Replace the template's starter service with them if it's still unfilled, and leave the user's own entries as they are. Never change a policy definition another service lists to suit them, and never list the evaluation's services in `permissions.yaml`: nobody else may use them.
+
 Point out the mistakes that are easy to make:
 
 | In | The rule |
@@ -52,6 +54,8 @@ databricks ai-gateway list-model-services --parent schemas/system.ai --profile <
 databricks ai-gateway list-model-services --parent schemas/<catalog>.<schema> --profile <profile>   # services already in the schema
 databricks groups list --profile <profile>                                                       # groups in this workspace
 ```
+
+In a notebook, each of these has its row in SKILL.md, In a notebook.
 
 ## 3. Confirm they're filled in
 

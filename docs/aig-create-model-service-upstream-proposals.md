@@ -1,6 +1,6 @@
 # Draft change proposals for databricks-agent-skills (forge-aig-create-model-service)
 
-Drafts for the base-skill gaps that `skills/forge-aig-create-model-service` works around, in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Proposals 1 and 2 (service policies, and reading them) are in `evaluate-guardrails-upstream-proposals.md`; this skill's `coverage_gaps` point at them too. Checked against upstream v0.2.45 on 2026-11-10. Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in `skills/forge-aig-create-model-service/ucs.yaml`.
+Drafts for the base-skill gaps that `skills/forge-aig-create-model-service` works around, in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Proposals 1 and 2 (service policies, and reading them) are in `aig-evaluate-guardrails-upstream-proposals.md`; this skill's `coverage_gaps` point at them too. Checked against upstream v0.2.45 on 2026-11-10. Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in `skills/forge-aig-create-model-service/ucs.yaml`.
 
 ---
 

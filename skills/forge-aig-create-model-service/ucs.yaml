@@ -1,7 +1,7 @@
 # Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
 # and scripts/check_base_skills.py reads base_skills at runtime.
 name: forge-aig-create-model-service
-version: 0.1.0
+version: 0.2.0
 owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
 dbs_release: dbs-2026.11                    # Forge base release; not published yet, so `upstream` is the working pin
 upstream: databricks/databricks-agent-skills@v0.2.45   # written against this tag (2026-11-10); not yet certified in a workspace
@@ -20,10 +20,10 @@ shared:                                     # identical in every skill that carr
 catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
   title: Model services and access
   choose_when: creating or changing Unity AI Gateway model services (routing, traffic splits, fallbacks, rate limits, inference tables), putting guardrails (service policies, built-in or custom LLM-judge and SQL rules) on them, or granting groups, users, and service principals access to model services, from YAML templates the user fills in
-  not_for: measuring how well guardrails block unsafe prompts (forge-evaluate-guardrails); a document Q&A agent (forge-doc-qa-agent)
+  not_for: measuring how well guardrails block unsafe prompts (forge-aig-evaluate-guardrails); a document Q&A agent (forge-doc-qa-agent)
   produces: YAML templates the user fills in, then the model services they describe, with routing, fallbacks, rate limits, inference tables, and service policies, access granted to the groups and users listed, and a check that each service matches, answers, and has its grants in effect
   state_file: aig-model-services.json       # forge offers to resume this skill when the file is in <workdir>
-  next: []
+  next: [forge-aig-evaluate-guardrails]       # measuring how well the services' guardrails block unsafe prompts
 
 modules:
   - id: 00-preflight
@@ -74,7 +74,7 @@ modules:
 
 # Capabilities this skill needs but the pinned base release doesn't cover, or covers with stale facts.
 # SKILL.md "Base-skill guidance to override" holds the runtime instructions for each entry.
-# Drafts of the upstream change proposals: docs/evaluate-guardrails-upstream-proposals.md (1-2) and
+# Drafts of the upstream change proposals: docs/aig-evaluate-guardrails-upstream-proposals.md (1-2) and
 # docs/aig-create-model-service-upstream-proposals.md (3-4). After filing one, add `upstream_issue: <url>`.
 coverage_gaps:
   - capability: Service policies (guardrails) on model services, and attaching them by API
@@ -99,7 +99,7 @@ coverage_gaps:
   - capability: Reading a model service's service policies, which the typed CLI leaves out
     modules: [02-plan, 04-evaluate]
     kind: missing
-    evidence: []                             # observed with CLI 1.18.0 (forge-evaluate-guardrails, 2026-10-01); recheck on newer CLIs
+    evidence: []                             # observed with CLI 1.18.0 (forge-aig-evaluate-guardrails, 2026-10-01); recheck on newer CLIs
 
 # Platform facts this skill hard-codes. The refiner re-checks them like coverage_gaps; when one changes,
 # update every file in used_in.
@@ -126,10 +126,14 @@ facts:
     used_in: [scripts/deploy_services.py, scripts/service-policies.yaml]
     evidence:
       - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/
-        checked: 2026-11-02                  # by forge-evaluate-guardrails; invoke_llm_judge and the option names are from the source
+        checked: 2026-11-02                  # by forge-aig-evaluate-guardrails; invoke_llm_judge and the option names are from the source
   - fact: SQL policies can't use ai_query, subqueries, BETWEEN, or aggregates, or COALESCE or CONCAT with more than two arguments
     kind: heuristic                          # the source's findings ("cannot be transpiled to CEL"); the function reference lists what's supported
     used_in: [scripts/deploy_services.py, scripts/service-policies.yaml]
+    evidence: []
+  - fact: In Genie Code in a notebook, the SDK signs in as the notebook's user only in the notebook's own Python process, so the scripts run there through runpy (forge_run), and evaluate.py runs the plan scripts in its own process
+    kind: heuristic                          # the SDK's notebook sign-in reads the notebook's REPL context, which a subprocess doesn't have; not yet tried in a workspace
+    used_in: [SKILL.md, scripts/evaluate.py, scripts/check_access.py, scripts/deploy_services.py, scripts/grant_access.py]
     evidence: []
   - fact: The default policy evaluator is the model service system.ai.gpt-oss-20b
     kind: heuristic                          # the source's default; the docs don't name one
@@ -142,7 +146,7 @@ facts:
     used_in: [modules/04-evaluate.md, scripts/evaluate.py]
     evidence:
       - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/create-service-policy
-        checked: 2026-11-02                  # by forge-evaluate-guardrails; grants: databricks-unity-gateway references/permissions.md
+        checked: 2026-11-02                  # by forge-aig-evaluate-guardrails; grants: databricks-unity-gateway references/permissions.md
   - fact: ai_query supports only system.ai model services, not model services you create
     used_in: [modules/04-evaluate.md]
     evidence: []                             # databricks-unity-gateway references/querying.md (v0.2.45), citing docs/ai-gateway/query-model-services

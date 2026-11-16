@@ -527,3 +527,33 @@ def test_scripts_explain_a_missing_state_file(tmp_path: Path):
     for script in ("render.py", "deploy_services.py", "grant_access.py", "check_access.py", "evaluate.py"):
         result = run(script, "--state", str(tmp_path / "aig-model-services.json"))
         assert result.returncode == 1 and "Module 00 writes it" in result.stderr, script
+
+
+# ── Genie Code in a notebook ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("module", [render, deploy, grant, access])
+def test_scripts_need_a_profile_only_locally(tmp_path: Path, module):
+    path = tmp_path / "aig-model-services.json"
+    path.write_text(json.dumps({**STATE, "runtime": "workspace", "profile": None}))
+    assert module.load_state(path)["runtime"] == "workspace"
+    path.write_text(json.dumps({**STATE, "profile": None}))
+    with pytest.raises(SystemExit, match="profile is missing or empty: locally"):
+        module.load_state(path)
+    path.write_text(json.dumps({**STATE, "runtime": "notebook"}))
+    with pytest.raises(SystemExit, match="runtime='notebook'"):
+        module.load_state(path)
+
+
+def test_evaluate_runs_the_plans_in_its_own_process(tmp_path: Path):
+    """In a notebook only that process is signed in, so evaluate.py runs deploy_services.py and grant_access.py with
+    runpy, not a subprocess, and still reads their JSON and their exit messages."""
+    state = workdir(tmp_path, services=None, runtime="workspace", profile=None)
+    argv = list(sys.argv)
+    plan = evaluate.run_plan("deploy_services.py", state)
+    assert plan == {"errors": [f"model-services.yaml not found in {tmp_path / 'ai-gateway'}: render.py writes it "
+                               "(module 01)"]}
+    missing = evaluate.run_plan("grant_access.py", tmp_path / "elsewhere.json")
+    assert "Module 00 writes it" in missing["errors"][0]
+    assert sys.argv == argv  # restored for the caller
+

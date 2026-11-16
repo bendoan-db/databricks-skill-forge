@@ -31,11 +31,12 @@ At most 50 files and folders, 3 levels deep, text files only, and no caches (che
 
 ## README.md: the overview
 
-The overview is for a Databricks user deciding whether to use the skill, and what it will ask and build. Write it for someone who will never read SKILL.md: plain words, no agent instructions. Sections, in order (checked): What it's for, What you provide, What you get, How it works; then Before it acts, and Running it.
-- **What it's for:** what to choose it for and what not to, from the catalog entry, naming the neighboring skills.
-- **What you provide:** the prerequisites (workspace features, tools, privileges), then a table `| Input | Required | Default | What it is |` with a row for every input in ucs.yaml, `Yes` for the required ones and `No` for the rest (checked).
-- **What you get:** each resource it creates in the workspace, by name; the working-directory tree, with the state file (checked); and what "done" means, with each threshold as `≥ value` (checked).
-- **How it works:** a row per module, `| NN | Step | What happens |` (checked).
+The overview is for a Databricks user deciding whether to use the skill, and what it will ask and build. Write it for someone who will never read SKILL.md: plain words, no agent instructions, and in the third person: the reader is "the user", never "you", and nothing tells them what to do. After the title and a summary, the sections are, in order (checked): Purpose, How to Run, Inputs, Outputs, How It Works.
+- **Purpose:** `- **This Forge Skill is used to:**`, with what it's used to do as verb phrases, one per line, then `- **Not for**` what to use instead, from the catalog entry, naming the neighboring skills.
+- **How to Run:** how to start it (`/forge`, or naming the skill), an example request, and where its progress is saved and how to resume.
+- **Inputs:** the prerequisites (workspace features, tools, privileges), then a table `| Input | Required | Default | What it is |` with a row for every input in ucs.yaml, `Yes` for the required ones and `No` for the rest (checked).
+- **Outputs:** each resource it creates in the workspace, by name; the working-directory tree, with the state file (checked); and what "done" means, with each threshold as `≥ value` (checked).
+- **How It Works:** a row per module, `| NN | Step | What happens |` (checked), then a `### Preflight Checks and Guardrails` subsection (checked): what it asks before acting, and what it never does.
 - **No version number:** releases and drift edits bump the version, and the overview would fall behind.
 
 ## Modules

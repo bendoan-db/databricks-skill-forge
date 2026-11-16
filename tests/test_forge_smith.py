@@ -123,10 +123,14 @@ def test_check_skill_catches_problems(tmp_path: Path):
 
     overview = folder / "README.md"
     overview.write_text(overview.read_text().replace("| `index_name` | Yes |", "| `index_name` | No |")
-                        .replace("≥ 0.9", "at least 0.9"))
+                        .replace("≥ 0.9", "at least 0.9")
+                        .replace("### Preflight Checks and Guardrails", "### Before it acts"))
     problems = "\n".join(check_skill.check(folder))
     assert "the inputs table needs a row | `index_name` | Yes |" in problems
     assert "doesn't give doc_hit_rate's threshold, ≥ 0.9" in problems
+    assert "How It Works needs a ### Preflight Checks and Guardrails subsection" in problems
+    overview.write_text(overview.read_text().replace("## How to Run\n", "## Running it\n"))
+    assert "README.md sections must be, in order: Purpose, How to Run" in "\n".join(check_skill.check(folder))
 
     skill_md = folder / "SKILL.md"
     skill_md.write_text(skill_md.read_text().replace("write_readme.py --state", "write_readme.py --stat"))
@@ -390,7 +394,8 @@ def test_render_template_copies_like_the_pipeline_skills():
 
     template = parts(SMITH / "templates" / "render.py")
     assert len(template) == 5
-    for skill in ("forge-structured-doc-extraction", "forge-unstructured-doc-extraction", "forge-evaluate-guardrails"):
+    for skill in ("forge-structured-doc-extraction", "forge-unstructured-doc-extraction",
+                  "forge-aig-evaluate-guardrails"):
         assert parts(SKILLS_DIR / skill / "scripts" / "render.py") == template, f"{skill}/scripts/render.py"
 
 

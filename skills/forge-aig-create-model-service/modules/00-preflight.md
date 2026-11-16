@@ -4,7 +4,7 @@ Resolve the inputs, confirm the tooling, base skills, and workspace, check that 
 
 ## 1. Ask for the requirements
 
-Before anything else, ask the user for these two things in one question, and wait for answers. Don't fill them in from defaults without asking. If the user already answered one, for example in their request to `forge`, confirm that answer in the same question instead of asking it fresh:
+Before anything else, ask the user for these two things in one question, and wait for answers. Don't fill them in from defaults without asking. If the user already answered one, for example in their request to `forge`, confirm that answer in the same question instead of asking it fresh. When another use case runs this skill first, such as `forge-aig-evaluate-guardrails` creating the services it measures, it passes both, its `runtime`, and the services and policies it needs: confirm them with the user the same way, record the same `runtime` in step 5, and keep the entries for module 01, step 2:
 
 | Requirement | Records | What to ask |
 |---|---|---|
@@ -27,6 +27,8 @@ Tell the user that the next module writes these files as templates for them to f
 
 ## 3. Tooling and base skills
 
+First, where this runs, which becomes `runtime` in step 5: `workspace` when you're Genie Code in a notebook, and `local` otherwise. In a notebook, run the two setup cells from SKILL.md, In a notebook, then the base-skill check with `forge_run`, and skip the CLI and `uv` lines below.
+
 **Load:** `databricks-core` (profile selection and auth; warehouse discovery in step 4).
 
 ```bash
@@ -36,7 +38,7 @@ databricks auth login --host <workspace-url> --profile <profile>   # only if the
 uv run <skill>/scripts/check_base_skills.py      # base skills from ucs.yaml are installed and new enough
 ```
 
-`check_base_skills.py` compares the sibling skill folders with the versions recorded in `ucs.yaml`. If it exits non-zero, stop: the modules cite reference files that the installed base skills don't have. Ask the user to install or update databricks-agent-skills (v0.2.27 or later) in the same skills directory, for example with `databricks aitools update`.
+`check_base_skills.py` compares the sibling skill folders with the versions recorded in `ucs.yaml`. If it exits non-zero, stop: the modules cite reference files that the installed base skills don't have. Ask the user to install or update databricks-agent-skills (v0.2.27 or later) in the same skills directory, for example with `databricks aitools update`. In a notebook, the `install_genie_code` notebook installs or updates them.
 
 ## 4. The workspace
 
@@ -57,6 +59,7 @@ Write the resolved values to `<workdir>/aig-model-services.json`, so the permiss
 
 ```json
 {
+  "runtime": "local",
   "profile": "<profile>",
   "target_schema": "<catalog>.<schema>",
   "catalog": "<catalog>",
@@ -69,11 +72,11 @@ Write the resolved values to `<workdir>/aig-model-services.json`, so the permiss
 }
 ```
 
-Leave out `default_evaluator` and `warehouse_id` without `service_policies`. Add `test_prompt` if the user wants module 04 to send its own. Later modules add nothing; they read this file and the YAML files.
+In a notebook, `runtime` is `workspace` and there's no `profile`. Leave out `default_evaluator` and `warehouse_id` without `service_policies`. Add `test_prompt` if the user wants module 04 to send its own. Later modules add nothing; they read this file and the YAML files.
 
 ## 6. Permissions
 
-Check that the user, as the CLI profile, holds what the changes need on the target schema:
+Check that the user, as the CLI profile (in a notebook, as the notebook's user), holds what the changes need on the target schema:
 
 ```bash
 uv run <skill>/scripts/check_access.py --state <workdir>/aig-model-services.json
@@ -109,7 +112,7 @@ Nothing is created until module 03, after the user has seen the plan.
 
 ## Verify
 
-- The user answered both requirements in step 1, and every other input is resolved and echoed back.
+- The user answered both requirements in step 1, and every other input is resolved and echoed back. `runtime` is recorded, with `profile` when it's `local`.
 - `<catalog>.<schema>` exists, and `list-model-services` answers.
 - With `service_policies`, the user confirmed the preview is on, and `warehouse_id` is recorded.
 - `check_base_skills.py` exits 0, and `check_access.py` exits 0, or the user dropped the parts whose privileges are missing.

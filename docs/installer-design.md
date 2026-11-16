@@ -110,7 +110,7 @@ Genie Code in the workspace loads skills from `/Users/<user>/.assistant/skills`,
   - writing `.assistant` folders through `/Workspace` on serverless;
   - egress to GitHub from serverless;
   - importing the release's `install_genie_code.py` as a notebook;
-  - how the pipeline skills' task scripts land. They're source-format notebooks (`# Databricks notebook source`). Written through `/Workspace`, they could be stored as notebooks without their `.py` extension, and `render.py` copies them by that name. If they are, write them as workspace files, or leave the extension check to `render.py`.
+  - how the pipeline skills' task scripts land. They're source-format notebooks (`# Databricks notebook source`). The docs ([workspace files](https://docs.databricks.com/aws/en/files/workspace-interact), checked 2026-11-12) describe a file written through `/Workspace` as a workspace file, with converting it to a notebook a separate step, so `render.py` should find them by name. `forge-aig-evaluate-guardrails`'s `job.py` relies on the same, and imports the notebooks its job runs through the import API.
 - How Genie Code treats two skills with the same name: a base skill in both the user and workspace folders, or next to the CLI's `.system` copy.
 - `databricks workspace export-dir` with these files and `--overwrite`. It doesn't remove files that a newer version dropped.
-- Whether the use-case workflows run in Genie Code in a notebook, since their modules run scripts with `uv run` and deploy with the `databricks` CLI.
+- Whether the use-case workflows run in Genie Code in a notebook. `forge-aig-evaluate-guardrails` and `forge-aig-create-model-service` have a notebook runtime (`docs/aig-evaluate-guardrails-design.md`), not yet tried in a workspace; the others run scripts with `uv run` and deploy with the `databricks` CLI.

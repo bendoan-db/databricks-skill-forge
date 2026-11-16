@@ -18,9 +18,11 @@ Each test prompt is billed like any request, plus one evaluator call per LLM-bas
 """
 
 import argparse
+import contextlib
+import io
 import json
 import re
-import subprocess
+import runpy
 import sys
 import time
 from pathlib import Path
@@ -31,6 +33,27 @@ GATEWAY = "/ai-gateway/mlflow/v1/chat/completions"
 TEST_PROMPT = "What is Databricks? Answer in one sentence."
 RETRIED = {"TooManyRequests", "TemporarilyUnavailable", "InternalError", "DeadlineExceeded", "NotFound"}
 FAILED_POLICY = re.compile(r"(Input|Output) policy '([^']+)' failed to evaluate", re.I)
+RUNTIMES = ("local", "workspace")
+
+
+def runtime_errors(state: dict) -> list[str]:
+    """Problems with where the skill runs: `local`, with a CLI profile, or `workspace`, Genie Code in a notebook."""
+    runtime = state.get("runtime", "local")
+    if runtime not in RUNTIMES:
+        return [f"runtime={runtime!r}: local or workspace (module 00)"]
+    if runtime == "local" and not state.get("profile"):
+        return ["profile is missing or empty: locally, every command uses the CLI profile"]
+    return []
+
+
+def workspace_client(state: dict):
+    """The workspace: as the CLI profile locally, or with runtime workspace as the notebook's user, which only the
+    notebook's own Python process can sign in as (so the modules run scripts with forge_run, not a subprocess)."""
+    from databricks.sdk import WorkspaceClient
+
+    if state.get("runtime") == "workspace":
+        return WorkspaceClient()
+    return WorkspaceClient(profile=state["profile"])
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,13 +63,24 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_plan(script: str, state: Path) -> dict:
-    """A plan script's JSON output. Run as a separate process: scripts don't import each other."""
-    result = subprocess.run([sys.executable, "-B", str(SCRIPTS / script), "--state", str(state)],
-                            capture_output=True, text=True, check=False)
+    """A plan script's JSON output. It runs as a program, the way the modules run it, rather than being imported
+    (scripts don't import each other), but in this process: in a notebook only this process is signed in as the
+    notebook's user, and a subprocess isn't."""
+    out, argv, problem = io.StringIO(), sys.argv, None
+    sys.argv = [str(SCRIPTS / script), "--state", str(state)]
     try:
-        return json.loads(result.stdout)
+        with contextlib.redirect_stdout(out):
+            runpy.run_path(str(SCRIPTS / script), run_name="__main__")
+    except SystemExit as e:
+        problem = e.code if isinstance(e.code, str) else None
+    except Exception as e:  # noqa: BLE001 - a plan that crashes is a failed check, reported like one
+        problem = f"{script} failed: {type(e).__name__}: {e}"
+    finally:
+        sys.argv = argv
+    try:
+        return json.loads(out.getvalue())
     except ValueError:
-        return {"errors": [(result.stderr.strip() or f"{script} printed no plan")[-800:]]}
+        return {"errors": [(problem or f"{script} printed no plan")[-800:]]}
 
 
 def ask(client, service: str, prompt: str, attempts: int = 6, sleep=time.sleep) -> dict:
@@ -103,14 +137,14 @@ def main() -> None:
     if not args.state.is_file():
         sys.exit(f"{args.state} not found. Module 00 writes it; run preflight first.")
     state = json.loads(args.state.read_text())
+    if errors := runtime_errors(state):
+        sys.exit(f"{args.state}: " + "; ".join(errors))
     parts = state.get("parts") or []
     services_plan = run_plan("deploy_services.py", args.state) if "model_services" in parts else None
     grants_plan = run_plan("grant_access.py", args.state) if "grants" in parts else None
     answers = []
     if services_plan and not services_plan.get("errors"):
-        from databricks.sdk import WorkspaceClient
-
-        client = WorkspaceClient(profile=state["profile"]).api_client
+        client = workspace_client(state).api_client
         prompt = state.get("test_prompt") or TEST_PROMPT
         answers = [ask(client, s["name"], prompt) for s in services_plan.get("services") or []]
     report = score(state, services_plan, grants_plan, answers)

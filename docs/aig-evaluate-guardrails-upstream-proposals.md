@@ -1,6 +1,6 @@
-# Draft change proposals for databricks-agent-skills (forge-evaluate-guardrails)
+# Draft change proposals for databricks-agent-skills (forge-aig-evaluate-guardrails)
 
-Drafts for the base-skill gaps that `skills/forge-evaluate-guardrails` works around, in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Checked against upstream v0.2.40 on 2026-11-02. Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in the skill's `ucs.yaml`.
+Drafts for the base-skill gaps that `skills/forge-aig-evaluate-guardrails` works around, in the format of upstream's [change-proposal template](https://github.com/databricks/databricks-agent-skills/blob/main/.github/ISSUE_TEMPLATE/change-proposal.md). Checked against upstream v0.2.40 on 2026-11-02. Not filed yet. After filing one, add its URL as `upstream_issue` on the matching `coverage_gaps` entry in the skill's `ucs.yaml`.
 
 ---
 

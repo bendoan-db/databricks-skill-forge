@@ -2,11 +2,11 @@
 # MAGIC %md
 # MAGIC # Run the guardrail evaluation
 # MAGIC
-# MAGIC The `run_eval` task of the forge-evaluate-guardrails evaluation job: it sends each prompt through the evaluation's
-# MAGIC model service, records whether a guardrail blocked it and which one, and scores the run into the metrics table and
-# MAGIC MLflow. The job passes its settings as the widgets at the top (`mode` and `run_id` come from the job's parameters);
-# MAGIC to run it by hand, fill them in. To keep a change you make here, export this notebook into the bundle's `src/`
-# MAGIC folder before the next deploy, which otherwise replaces it (module 01).
+# MAGIC The `run_eval` task of the forge-aig-evaluate-guardrails evaluation job: it sends each prompt through the
+# MAGIC evaluation's model service, records whether a guardrail blocked it and which one, and scores the run into the
+# MAGIC metrics table and MLflow. The job passes its settings as the widgets at the top (`mode` and `run_id` come from
+# MAGIC the job's parameters); to run it by hand, fill them in. To keep a change you make here, export this notebook
+# MAGIC into the bundle's `src/` folder before the next deploy, which otherwise replaces it (module 01).
 
 # COMMAND ----------
 
@@ -14,7 +14,7 @@
 
 # COMMAND ----------
 
-"""Send the prompts through the guarded model service and score the run (forge-evaluate-guardrails module 03).
+"""Send the prompts through the guarded model services and score the run (forge-aig-evaluate-guardrails module 03).
 
 Second task of the evaluation job, after load_prompts.py. It's a Databricks notebook: it runs as a serverless notebook
 task whose parameters arrive as widgets, or locally through Databricks Connect, with the same settings as flags:
@@ -22,11 +22,14 @@ task whose parameters arrive as widgets, or locally through Databricks Connect, 
     uv run --with "databricks-connect>=17" --with "mlflow-skinny>=3" python run_eval.py --catalog main \
         --schema guardrail_eval --prefix guardrail_eval --config eval_config.json --mode sample
 
-Before sending anything it checks that the model service has exactly the configured guardrails, and waits until
-settle_minutes have passed since it last changed (policy changes take a few minutes to take effect). A run sends
-`sample_size` prompts per dataset and label (mode `sample`) or all of them (`full`), with `concurrency` calls in flight,
-and appends one row per prompt to <prefix>_results in batches. A run is resumable: give its run_id again, and only the
-prompts it hasn't sent are sent. It then replaces the run's rows in <prefix>_metrics, and logs the run to MLflow.
+The config's `services` are the model services under evaluation, which forge-aig-create-model-service created, each
+with the policies it must have. Before sending anything it checks that each service has exactly those policies, and
+waits until settle_minutes have passed since any of them last changed (policy changes take a few minutes to take
+effect). A run sends the same prompts to every service: `sample_size` per dataset and label (mode `sample`) or all of
+them (`full`), with `concurrency` calls in flight in all, and appends one row per prompt and service to
+<prefix>_results in batches. A run is resumable: give its run_id again, and only what it hasn't sent is sent. It then
+replaces the run's rows in <prefix>_metrics, scored per service so the services compare side by side, and logs one
+MLflow run per service, tagged with the run's id.
 
 A blocked prompt is a positive. A guardrail that fails to evaluate denies the request (the gateway fails closed), so
 that counts as a block by that guardrail; a rate-limited call is retried instead, and a call that still fails is an
@@ -62,19 +65,19 @@ RESULTS_DDL = ("prompt_id STRING, run_id STRING, run_ts TIMESTAMP, mode STRING, 
                "categories ARRAY<STRING>, expected STRING, blocked BOOLEAN, blocking_policy STRING, phase STRING, "
                "reason STRING, finish_reason STRING, http_status INT, latency_ms DOUBLE, prompt_tokens INT, "
                "total_tokens INT, result_class STRING, error STRING, response STRING")
-METRICS_DDL = ("run_id STRING, run_ts TIMESTAMP, mode STRING, breakdown STRING, dataset STRING, group_name STRING, "
-               "n BIGINT, expected_block BIGINT, expected_allow BIGINT, blocked BIGINT, tp BIGINT, fn BIGINT, fp BIGINT, "
-               "tn BIGINT, errors BIGINT, recall DOUBLE, precision DOUBLE, fp_rate DOUBLE, accuracy DOUBLE, f1 DOUBLE, "
-               "latency_p50_ms DOUBLE, latency_p95_ms DOUBLE")
+METRICS_DDL = ("run_id STRING, run_ts TIMESTAMP, mode STRING, model_service STRING, breakdown STRING, dataset STRING, "
+               "group_name STRING, n BIGINT, expected_block BIGINT, expected_allow BIGINT, blocked BIGINT, tp BIGINT, "
+               "fn BIGINT, fp BIGINT, tn BIGINT, errors BIGINT, recall DOUBLE, precision DOUBLE, fp_rate DOUBLE, "
+               "accuracy DOUBLE, f1 DOUBLE, latency_p50_ms DOUBLE, latency_p95_ms DOUBLE")
 RESULT_COLUMNS = [c.split()[0] for c in RESULTS_DDL.split(", ")]
 METRIC_COLUMNS = [c.split()[0] for c in METRICS_DDL.split(", ")]
 # What scoring reads back. Not run_id: on serverless, a big result filtered on it can come back in Arrow batches that
 # disagree on whether it can be null, and the read fails.
-SCORED_COLUMNS = ["prompt_id", "dataset", "categories", "expected", "blocked", "blocking_policy", "result_class",
-                  "latency_ms"]
+SCORED_COLUMNS = ["prompt_id", "model_service", "dataset", "categories", "expected", "blocked", "blocking_policy",
+                  "result_class", "latency_ms"]
 COUNTS = ("n", "expected_block", "expected_allow", "blocked", "tp", "fn", "fp", "tn", "errors")
 RATES = ("recall", "precision", "fp_rate", "accuracy", "f1")
-CONFIG_KEYS = ("model_service", "policies", "concurrency", "max_tokens", "sample_size", "settle_minutes", "experiment")
+CONFIG_KEYS = ("services", "concurrency", "max_tokens", "sample_size", "settle_minutes", "experiment")
 
 # COMMAND ----------
 
@@ -115,8 +118,18 @@ def load_config(path: Path) -> dict:
         raise SystemExit(f"{path} not found: render.py writes it into the bundle's src/ (module 01)")
     config = {k: v for k, v in json.loads(path.read_text()).items() if k != "_rendered_by"}
     errors = [f"{key} is missing" for key in CONFIG_KEYS if config.get(key) in (None, "", [])]
-    if config.get("model_service") and not SERVICE_RE.match(str(config["model_service"])):
-        errors.append(f"model_service={config['model_service']!r}: use <catalog>.<schema>.<service>")
+    services = config.get("services") or []
+    if not isinstance(services, list):
+        errors.append("services must be a list of {name, policies}")
+        services = []
+    names = [s.get("name") for s in services if isinstance(s, dict)]
+    for s in services:
+        if not isinstance(s, dict) or not SERVICE_RE.match(str(s.get("name", ""))):
+            errors.append(f"services: {s!r} needs a name, <catalog>.<schema>.<service>")
+        elif not isinstance(s.get("policies"), list) or not s["policies"]:
+            errors.append(f"services: {s['name']} needs policies, the service policies it must have")
+    if len(set(names)) != len(names):
+        errors.append("services: a service is listed twice")
     if errors:
         raise SystemExit(f"{path}: " + "; ".join(errors))
     return config
@@ -257,9 +270,9 @@ def _score(rows: list[dict], latency: bool) -> dict:
 
 
 def compute(rows: list[dict]) -> list[dict]:
-    """The metrics rows for one run's results: overall, per dataset, per dataset and category (over the prompts that
-    carry the category), and per blocking guardrail (its blocks and how many were false positives). ERROR rows count
-    in n and errors, not in the confusion counts; a rate with no denominator is None."""
+    """The metrics rows for one service's results in a run: overall, per dataset, per dataset and category (over the
+    prompts that carry the category), and per blocking guardrail (its blocks and how many were false positives). ERROR
+    rows count in n and errors, not in the confusion counts; a rate with no denominator is None."""
     out = [{"breakdown": "overall", "dataset": "all", "group_name": "all", **_score(rows, True)}]
     datasets = sorted({r["dataset"] for r in rows})
     for dataset in datasets:
@@ -281,6 +294,13 @@ def compute(rows: list[dict]) -> list[dict]:
                     **dict.fromkeys(RATES), "latency_p50_ms": None, "latency_p95_ms": None,
                     "n": len(group), "blocked": len(group), "tp": tp, "fp": fp})
     return out
+
+
+def compute_all(rows: list[dict], services: list[str]) -> list[dict]:
+    """compute() for each service's rows in a run, in the config's order, with the service on every metrics row.
+    Rows for a service that's no longer in the config are left out."""
+    return [{"model_service": name, **m} for name in services
+            for m in compute([r for r in rows if r.get("model_service") == name])]
 
 
 def _slug(value) -> str:
@@ -327,7 +347,7 @@ def readiness(service: dict, policies: list[str], settle_minutes: float, now: da
     live = sorted(p["name"] for p in live_policies(service))
     if set(live) != set(policies):
         return (f"{service.get('name') or 'the model service'} has the guardrails {live}, not {sorted(policies)}: "
-                "run guardrail_service.py --apply (module 02)", 0.0)
+                "apply forge-aig-create-model-service again (its module 03), then check it (module 02)", 0.0)
     updated = service.get("update_time")
     if isinstance(updated, (int, float)):
         changed = datetime.fromtimestamp(updated / 1000, timezone.utc)
@@ -338,52 +358,68 @@ def readiness(service: dict, policies: list[str], settle_minutes: float, now: da
     return None, max(0.0, settle_minutes * 60 - (now - changed).total_seconds())
 
 
-def wait_until_ready(w, model_service: str, policies: list[str], settle_minutes: float) -> dict:
-    """The model service as read, once it matches the config and has settled."""
-    try:
-        service = w.api_client.do("GET", f"{API}/{model_service}")
-    except Exception as e:  # noqa: BLE001
-        if type(e).__name__ == "NotFound":
-            raise SystemExit(f"{model_service} doesn't exist: run guardrail_service.py --apply (module 02)") from e
-        raise
-    problem, wait = readiness(service, policies, settle_minutes, datetime.now(timezone.utc))
-    if problem:
-        raise SystemExit(problem)
+def wait_until_ready(w, services: list[dict], settle_minutes: float) -> dict[str, dict]:
+    """Each model service as read, by name, once all of them match the config and have settled."""
+    live, problems, wait = {}, [], 0.0
+    now = datetime.now(timezone.utc)
+    for entry in services:
+        name = entry["name"]
+        try:
+            live[name] = w.api_client.do("GET", f"{API}/{name}")
+        except Exception as e:  # noqa: BLE001
+            if type(e).__name__ != "NotFound":
+                raise
+            problems.append(f"{name} doesn't exist: run forge-aig-create-model-service's module 03 (apply)")
+            continue
+        problem, seconds = readiness(live[name], entry["policies"], settle_minutes, now)
+        if problem:
+            problems.append(problem)
+        wait = max(wait, seconds)
+    if problems:
+        raise SystemExit("; ".join(problems))
     if wait:
-        print(f"{model_service} changed recently; waiting {wait / 60:.1f} min for its guardrails to take effect")
+        print(f"A service changed recently; waiting {wait / 60:.1f} min for its guardrails to take effect")
         time.sleep(wait)
-    return service
+    return live
 
 
 def ensure_tables(spark, results: str, metrics: str) -> None:
-    spark.sql(f"CREATE TABLE IF NOT EXISTS {results} ({RESULTS_DDL})")
-    spark.sql(f"CREATE TABLE IF NOT EXISTS {metrics} ({METRICS_DDL})")
+    """Create the tables, and add any column a table from an earlier version of this notebook lacks."""
+    for table, ddl in ((results, RESULTS_DDL), (metrics, METRICS_DDL)):
+        spark.sql(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
+        have = set(spark.sql(f"SELECT * FROM {table} LIMIT 0").columns)
+        if missing := [column for column in ddl.split(", ") if column.split()[0] not in have]:
+            spark.sql(f"ALTER TABLE {table} ADD COLUMNS ({', '.join(missing)})")
 
 
-def done_ids(spark, results: str, run_id: str) -> set[str]:
-    rows = spark.sql(f"SELECT prompt_id FROM {results} WHERE run_id = :run_id", args={"run_id": run_id}).collect()
-    return {r.prompt_id for r in rows}
+def done_pairs(spark, results: str, run_id: str) -> set[tuple[str, str]]:
+    """(model_service, prompt_id) for each prompt the run already sent to a service."""
+    rows = spark.sql(f"SELECT model_service, prompt_id FROM {results} WHERE run_id = :run_id",
+                     args={"run_id": run_id}).collect()
+    return {(r.model_service, r.prompt_id) for r in rows}
 
 
 def append(spark, table: str, ddl: str, columns: list[str], rows: list[dict]) -> None:
     spark.createDataFrame([tuple(r[c] for c in columns) for r in rows], ddl).write.mode("append").saveAsTable(table)
 
 
-def send_all(w, run: dict, prompts: list[dict], model_service: str, concurrency: int, max_tokens: int, write) -> int:
-    """Send every prompt with `concurrency` calls in flight, passing each batch of result rows to write(rows) as it
-    fills. Returns how many were sent."""
+def send_all(w, run: dict, todo: list[tuple[str, dict]], concurrency: int, max_tokens: int, write) -> int:
+    """Send each (model service, prompt) with `concurrency` calls in flight in all, passing each batch of result rows to
+    write(rows) as it fills. Returns how many were sent."""
     buffer, sent, started = [], 0, time.time()
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(gateway_call, w, model_service, p["prompt"][:MAX_CHARS], max_tokens): p for p in prompts}
+        futures = {pool.submit(gateway_call, w, service, p["prompt"][:MAX_CHARS], max_tokens): (service, p)
+                   for service, p in todo}
         for future in as_completed(futures):
+            service, prompt = futures[future]
             now = datetime.now(timezone.utc).replace(tzinfo=None)
-            buffer.append(record(futures[future], future.result(), run, model_service, now))
+            buffer.append(record(prompt, future.result(), run, service, now))
             sent += 1
             if len(buffer) >= BATCH:
                 write(buffer)
                 buffer = []
             if sent % 500 == 0:
-                print(f"{sent}/{len(prompts)} sent, {(time.time() - started) / 60:.1f} min", flush=True)
+                print(f"{sent}/{len(todo)} sent, {(time.time() - started) / 60:.1f} min", flush=True)
     if buffer:
         write(buffer)
     return sent
@@ -404,30 +440,43 @@ def save_metrics(spark, metrics: str, run: dict, rows: list[dict]) -> None:
            [{"run_id": run["run_id"], "run_ts": ts, "mode": run["mode"], **r} for r in rows])
 
 
-def log_mlflow(w, config: dict, run: dict, rows: list[dict], service: dict, prompts: int) -> tuple[str, str]:
-    """Log the run to the MLflow experiment (a workspace path, or a name under your home folder). A rerun of the same
-    run_id updates its MLflow run; params are logged only on its first pass, since MLflow can't change them."""
+def mlflow_params(config: dict, run: dict, name: str, service: dict, prompts: int) -> dict:
+    """One service's MLflow params: the run's settings, and each of its policies' rank, handler, and options."""
+    params = {"model_service": name, "mode": run["mode"], "prompts": prompts, "services": len(config["services"]),
+              "concurrency": config["concurrency"], "max_tokens": config["max_tokens"]}
+    for p in live_policies(service):
+        options = {k: v for k, v in (p.get("options") or {}).items() if k not in ("categories", "instruction")}
+        summary = f"rank {p.get('rank')} | {p.get('handler')} | {json.dumps(options, sort_keys=True)}"
+        params[f"policy.{p['name']}"] = summary[:500]  # MLflow caps a param's length
+    return params
+
+
+def log_mlflow(w, config: dict, run: dict, rows: list[dict], live: dict[str, dict], prompts: int) -> tuple[str, dict]:
+    """Log one MLflow run per service to the experiment (a workspace path, or a name under your home folder), each
+    tagged with the evaluation run's id and its service, so the services compare side by side. A rerun of the same
+    run_id updates them; params are logged only on a run's first pass, since MLflow can't change them."""
     import mlflow
 
     experiment = config["experiment"]
     if not experiment.startswith("/"):
         experiment = f"/Users/{w.current_user.me().user_name}/{experiment}"
     mlflow.set_experiment(experiment)
-    found = mlflow.search_runs(filter_string=f"tags.eval_run_id = '{run['run_id']}'", output_format="list")
-    with mlflow.start_run(run_id=found[0].info.run_id if found else None, run_name=run["run_id"]) as active:
-        mlflow.set_tags({"eval_run_id": run["run_id"], "mode": run["mode"], "model_service": config["model_service"]})
-        if not found:
-            params = {"model_service": config["model_service"], "mode": run["mode"], "prompts": prompts,
-                      "concurrency": config["concurrency"], "max_tokens": config["max_tokens"]}
-            for p in live_policies(service):
-                options = {k: v for k, v in (p.get("options") or {}).items() if k != "categories"}
-                summary = f"rank {p.get('rank')} | {p.get('handler')} | {json.dumps(options, sort_keys=True)}"
-                params[f"policy.{p['name']}"] = summary[:500]  # MLflow caps a param's length
-            mlflow.log_params(params)
-        mlflow.log_metrics(mlflow_metrics(rows))
-        mlflow.log_dict({"metrics": rows}, "metrics.json")
-        mlflow.log_dict({"service_policies": live_policies(service)}, "service_policies.json")
-    return experiment, active.info.run_id
+    runs = {}
+    for name, service in live.items():
+        mine = [{k: v for k, v in r.items() if k != "model_service"} for r in rows if r["model_service"] == name]
+        tags = {"eval_run_id": run["run_id"], "model_service": name}
+        found = mlflow.search_runs(filter_string=" AND ".join(f"tags.{k} = '{v}'" for k, v in tags.items()),
+                                   output_format="list")
+        with mlflow.start_run(run_id=found[0].info.run_id if found else None,
+                              run_name=f"{run['run_id']} {name.rsplit('.', 1)[1]}") as active:
+            mlflow.set_tags({**tags, "mode": run["mode"]})
+            if not found:
+                mlflow.log_params(mlflow_params(config, run, name, service, prompts))
+            mlflow.log_metrics(mlflow_metrics(mine))
+            mlflow.log_dict({"metrics": mine}, "metrics.json")
+            mlflow.log_dict({"service_policies": live_policies(service)}, "service_policies.json")
+        runs[name] = active.info.run_id
+    return experiment, runs
 
 # COMMAND ----------
 
@@ -441,13 +490,14 @@ def main(argv: list[str] | None = None) -> None:
     config = load_config(Path(args.config) if args.config else script_dir() / "eval_config.json")
     table = lambda suffix: f"`{args.catalog}`.`{args.schema}`.`{args.prefix}_{suffix}`"  # noqa: E731
     prompts_table, results, metrics = table("prompts"), table("results"), table("metrics")
+    services = [s["name"] for s in config["services"]]
 
     from databricks.sdk import WorkspaceClient
 
     w = WorkspaceClient()
     spark = get_spark()
     ensure_tables(spark, results, metrics)
-    service = wait_until_ready(w, config["model_service"], config["policies"], float(config["settle_minutes"]))
+    live = wait_until_ready(w, config["services"], float(config["settle_minutes"]))
     run = new_run(args.mode, args.run_id, datetime.now(timezone.utc))
 
     prompts = [r.asDict(recursive=True) for r in spark.sql(
@@ -455,21 +505,25 @@ def main(argv: list[str] | None = None) -> None:
     if not prompts:
         raise SystemExit(f"{prompts_table} is empty: run the load_prompts task first (module 01)")
     chosen = prompts if run["mode"] == "full" else select_sample(prompts, int(config["sample_size"]))
-    done = done_ids(spark, results, run["run_id"])
-    todo = [p for p in chosen if p["prompt_id"] not in done]
-    print(f"{run['run_id']}: {len(chosen)} prompts, {len(done)} already sent, {len(todo)} to send")
-    sent = send_all(w, run, todo, config["model_service"], int(config["concurrency"]), int(config["max_tokens"]),
+    done = done_pairs(spark, results, run["run_id"])
+    todo = [(service, p) for service in services for p in chosen if (service, p["prompt_id"]) not in done]
+    print(f"{run['run_id']}: {len(chosen)} prompts for each of {len(services)} services, {len(done)} already sent, "
+          f"{len(todo)} to send")
+    sent = send_all(w, run, todo, int(config["concurrency"]), int(config["max_tokens"]),
                     lambda rows: append(spark, results, RESULTS_DDL, RESULT_COLUMNS, rows))
 
-    rows = compute(run_results(spark, results, run["run_id"]))
+    rows = compute_all(run_results(spark, results, run["run_id"]), services)
     save_metrics(spark, metrics, run, rows)
-    experiment, mlflow_run = log_mlflow(w, config, run, rows, service, len(chosen))
-    overall = rows[0]
-    print(json.dumps({
-        "run_id": run["run_id"], "mode": run["mode"], "prompts": len(chosen), "sent": sent,
-        **{k: overall[k] for k in (*RATES, "errors", "latency_p50_ms", "latency_p95_ms")},
-        "experiment": experiment, "mlflow_run_id": mlflow_run,
-    }))
+    experiment, mlflow_runs = log_mlflow(w, config, run, rows, live, len(chosen))
+    overall = {r["model_service"]: r for r in rows if r["breakdown"] == "overall"}
+    result = json.dumps({
+        "run_id": run["run_id"], "mode": run["mode"], "prompts": len(chosen), "sent": sent, "experiment": experiment,
+        "services": {name: {**{k: overall[name][k] for k in (*RATES, "errors", "latency_p50_ms", "latency_p95_ms")},
+                            "mlflow_run_id": mlflow_runs.get(name)} for name in services},
+    })
+    print(result)
+    if "dbutils" in globals():  # the task's output, which `bundle run` and job.py status show
+        dbutils.notebook.exit(result)  # noqa: F821
 
 # COMMAND ----------
 
