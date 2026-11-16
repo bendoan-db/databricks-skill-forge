@@ -20,8 +20,9 @@ NOTEBOOK_HEADER = "# Databricks notebook source"
 SHARED_FUNCTIONS = ("runtime_errors", "workspace_client")
 
 
-def test_the_two_gateway_skills_run_in_a_notebook():
-    assert NOTEBOOK_SKILLS == ["forge-aig-create-model-service", "forge-aig-evaluate-guardrails"]
+def test_the_skills_that_run_in_a_notebook():
+    assert NOTEBOOK_SKILLS == ["forge-aig-create-model-service", "forge-aig-evaluate-guardrails",
+                               "forge-structured-doc-extraction"]
 
 
 def section(skill: str) -> str:
@@ -50,19 +51,30 @@ def dependencies(script: Path) -> set[str]:
     return set(json.loads(match.group(1))) if match else set()
 
 
-def test_the_notebook_section_is_the_same_in_each_skill():
+def test_forge_run_is_the_same_in_each_skill():
     sources = {skill: forge_run_source(skill) for skill in NOTEBOOK_SKILLS}
     assert len(set(sources.values())) == 1, "forge_run differs between the skills; copy it over"
-    pip = {skill: re.findall(r"^%pip install .*$", section(skill), re.MULTILINE) for skill in NOTEBOOK_SKILLS}
-    assert all(len(lines) == 1 for lines in pip.values()) and len({lines[0] for lines in pip.values()}) == 1
+
+
+def floors(requirements: set[str]) -> dict[str, tuple]:
+    """{package: the highest >= floor} over requirements such as "databricks-sdk>=0.68"."""
+    out: dict[str, tuple] = {}
+    for requirement in requirements:
+        name, _, version = requirement.partition(">=")
+        floor = tuple(int(part) for part in version.split("."))
+        out[name] = max(out.get(name, floor), floor)
+    return out
 
 
 @pytest.mark.parametrize("skill", NOTEBOOK_SKILLS)
 def test_the_pip_line_installs_what_the_scripts_declare(skill: str):
-    line = re.search(r"^%pip install .*$", section(skill), re.MULTILINE).group(0)
-    installed = set(re.findall(r'"([^"]+)"', line))
+    lines = re.findall(r"^%pip install .*$", section(skill), re.MULTILINE)
+    assert len(lines) == 1, f"{skill}: SKILL.md, In a notebook, needs one %pip line"
+    installed = re.findall(r'"([^"]+)"', lines[0])
     declared = set().union(*(dependencies(p) for p in in_place_scripts(skill)))
-    assert installed == declared, f"{skill}: %pip installs {sorted(installed)}, the scripts declare {sorted(declared)}"
+    assert len(installed) == len(floors(set(installed))), f"{skill}: %pip names a package twice"
+    assert floors(set(installed)) == floors(declared), (
+        f"{skill}: %pip installs {sorted(installed)}; the scripts need {sorted(floors(declared).items())}")
 
 
 def functions(script: Path) -> dict[str, str]:
@@ -77,11 +89,14 @@ def test_every_script_signs_in_the_same_way():
     for skill in NOTEBOOK_SKILLS:
         for script in in_place_scripts(skill):
             text, found = script.read_text(), functions(script)
+            # workspace_client, or a profile only when there is one: both sign in as the notebook's user there
+            optional = text.count('WorkspaceClient(profile=state.get("profile"))')
             if "databricks-sdk" in str(dependencies(script)):
-                assert "workspace_client" in found, f"{skill}/{script.name} signs in without workspace_client"
-                assert text.count("WorkspaceClient(") == 2, (
-                    f"{skill}/{script.name}: only workspace_client builds a client")
-            if '"profile"' in text or "state.get(\"runtime\"" in text:
+                assert "workspace_client" in found or optional, f"{skill}/{script.name} signs in without either"
+                assert text.count("WorkspaceClient(") == (2 if "workspace_client" in found else 0) + optional, (
+                    f"{skill}/{script.name}: only workspace_client, or a WorkspaceClient whose profile is optional, "
+                    "builds a client")
+            if ('"profile"' in text or "state.get(\"runtime\"" in text) and not optional:  # a required profile
                 assert "runtime_errors" in found, f"{skill}/{script.name} reads the state without runtime_errors"
             for name in SHARED_FUNCTIONS:
                 if name in found:

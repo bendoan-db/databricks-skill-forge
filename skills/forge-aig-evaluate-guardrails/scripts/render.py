@@ -6,19 +6,19 @@
 
     uv run <skill>/scripts/render.py --state <workdir>/guardrail-eval.json
 
-Writes <workdir>/<name>/databricks.yml from scripts/databricks.yml, filling each whole-value <key> from the state
-file, and <name>/src/eval_config.json, the settings the job's notebooks read (the dataset, the model services and the
-policies each must have, and the run settings). It copies the job's notebooks to <name>/src/. Both rendered files carry
-a checksum: if one was edited by hand since the last render, nothing is written unless you pass --force. Each copy
-carries a checksum line too: a copy changed since it was written, such as a notebook edited in the workspace and
-exported back (module 01), is kept and listed under kept_edited, and --force replaces it with the skill's version.
+Writes <workdir>/<job_name>/databricks.yml from scripts/databricks.yml, filling each whole-value <key> from the state
+file, and <job_name>/src/eval_config.json, the settings the job's notebooks read (the dataset, the model services and
+the policies each must have, and the run settings). It copies the job's notebooks to <job_name>/src/. Both rendered
+files carry a checksum: if one was edited by hand since the last render, nothing is written unless you pass --force.
+Each copy carries a checksum line too: a copy changed since it was written, such as a notebook edited in the workspace
+and exported back (module 01), is kept and listed under kept_edited, and --force replaces it with the skill's version.
 
 The model services are forge-aig-create-model-service's: it creates them, and its aig-model-services.json and the
 model-services.yaml and service-policies.yaml in its config_dir describe them. This reads those files at render time,
-and never writes them, so the evaluation can't drift from what was applied. Each service in `model_services` must be
-in model-services.yaml, named <prefix>_..., not granted in permissions.yaml, and carry only policies that block, since
-a policy that only logs or redacts leaves no verdict in the reply. Validates everything first and reports every problem
-at once. Prints a JSON summary, with warnings about services that keep an inference table or rate limits.
+and never writes them, so the evaluation can't drift from what was applied. Each service in `model_services` must be in
+model-services.yaml, named <table_prefix>_..., not granted in permissions.yaml, and carry only policies that block,
+since a policy that only logs or redacts leaves no verdict in the reply. Validates everything first and reports every
+problem at once. Prints a JSON summary, with warnings about services that keep an inference table or rate limits.
 
 `runtime` is where both skills run, recorded once in module 00, and it must be the same in both state files. Locally,
 the bundle's target uses the CLI profile; in Genie Code in a notebook (runtime workspace) it has none, since job.py
@@ -59,7 +59,6 @@ APPLIED = "03-apply"  # its module that creates the services
 MAX_SERVICES = 10  # each service gets every prompt, so the cost of a run grows with each one
 DEFAULT_DATASETS = ("aegis2", "toxicchat")
 FORMATS = ("csv", "json", "jsonl", "parquet")
-TARGETS = {"recall", "precision", "f1", "accuracy", "fp_rate"}  # fp_rate is a ceiling, the others floors
 NUMBERS = {  # setting: (default, minimum, maximum)
     "concurrency": (8, 1, 64),
     "max_tokens": (64, 1, 4096),
@@ -88,7 +87,8 @@ def dataset_errors(dataset) -> list[str]:
     source = dataset.get("source")
     if source == "default":
         chosen = dataset.get("defaults", list(DEFAULT_DATASETS))
-        if not isinstance(chosen, list) or not chosen or set(chosen) - set(DEFAULT_DATASETS) or len(set(chosen)) != len(chosen):
+        if (not isinstance(chosen, list) or not chosen or set(chosen) - set(DEFAULT_DATASETS)
+                or len(set(chosen)) != len(chosen)):
             return [f"dataset.defaults={chosen!r}: a non-empty list from {list(DEFAULT_DATASETS)}"]
         return []
     if source not in ("table", "file"):
@@ -106,8 +106,10 @@ def dataset_errors(dataset) -> list[str]:
         if not isinstance(dataset.get(key), str) or not dataset[key].strip():
             errors.append(f"dataset.{key} is missing: the column that holds the {key.split('_')[0]}")
     values = dataset.get("block_values")
-    if not isinstance(values, list) or not values or not all(isinstance(v, (str, int, bool)) and str(v).strip() for v in values):
-        errors.append("dataset.block_values must be a non-empty list: the label values that mean a prompt should be blocked")
+    if (not isinstance(values, list) or not values
+            or not all(isinstance(v, (str, int, bool)) and str(v).strip() for v in values)):
+        errors.append("dataset.block_values must be a non-empty list: the label values that mean a prompt should be "
+                      "blocked")
     column = dataset.get("category_column")
     if "category_column" in dataset and (not isinstance(column, str) or not column.strip()):
         errors.append("dataset.category_column, when set, names a column")
@@ -131,15 +133,15 @@ def load_state(path: Path) -> dict:
         raise SystemExit(f"{path} not found. Module 00 writes it; run preflight first.")
     state = json.loads(path.read_text())
     errors = runtime_errors(state) + [
-        f"{key} is missing or empty" for key in ("catalog", "schema", "prefix", "name", "dataset", "model_services",
-                                                 "experiment") if not state.get(key)]
+        f"{key} is missing or empty" for key in ("catalog", "schema", "table_prefix", "job_name", "dataset",
+                                                 "model_services", "experiment") if not state.get(key)]
     for key in ("catalog", "schema"):
         if state.get(key) and not NAME_RE.match(str(state[key])):
             errors.append(f"{key}={state[key]!r}: use letters, digits, '_' or '-'")
-    if state.get("prefix") and not PREFIX_RE.match(str(state["prefix"])):
-        errors.append(f"prefix={state['prefix']!r}: use lowercase letters, digits, and '_'")
-    if state.get("name") and not BUNDLE_NAME_RE.match(str(state["name"])):
-        errors.append(f"name={state['name']!r}: use at most 40 characters from [a-z0-9-]")
+    if state.get("table_prefix") and not PREFIX_RE.match(str(state["table_prefix"])):
+        errors.append(f"table_prefix={state['table_prefix']!r}: use lowercase letters, digits, and '_'")
+    if state.get("job_name") and not BUNDLE_NAME_RE.match(str(state["job_name"])):
+        errors.append(f"job_name={state['job_name']!r}: use at most 40 characters from [a-z0-9-]")
     services = state.get("model_services")
     if services:
         if not isinstance(services, list) or len(set(map(str, services))) != len(services):
@@ -150,9 +152,11 @@ def load_state(path: Path) -> dict:
             for name in services:
                 if not three_part(name):
                     errors.append(f"model_services: {name!r}: use <catalog>.<schema>.<service>")
-                elif state.get("prefix") and not str(name).rsplit(".", 1)[1].startswith(f"{state['prefix']}_"):
-                    errors.append(f"model_services: {name} isn't named {state['prefix']}_...: the evaluation measures "
-                                  "only services of its own, so evaluate a copy named that way (module 00, step 1)")
+                elif (state.get("table_prefix")
+                      and not str(name).rsplit(".", 1)[1].startswith(f"{state['table_prefix']}_")):
+                    errors.append(f"model_services: {name} isn't named {state['table_prefix']}_...: the evaluation "
+                                  "measures only services of its own, so evaluate a copy named that way (module 00, "
+                                  "step 1)")
     if "services_state" in state and not FILE_NAME_RE.match(str(state["services_state"])):
         errors.append(f"services_state={state['services_state']!r}: a file name in the working directory")
     if state.get("experiment") and not str(state["experiment"]).startswith("/"):
@@ -163,15 +167,6 @@ def load_state(path: Path) -> dict:
         value = state.get(key, NUMBERS[key][0])
         if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
             errors.append(f"{key}={value!r}: a whole number from {low} to {high}")
-    targets = state.get("targets") or {}
-    if not isinstance(targets, dict):
-        errors.append("targets must be an object, such as {\"recall\": 0.9, \"fp_rate\": 0.1}")
-    else:
-        for key, value in targets.items():
-            if key not in TARGETS:
-                errors.append(f"targets.{key}: use {sorted(TARGETS)}")
-            elif isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
-                errors.append(f"targets.{key}={value!r}: a number from 0 to 1")
     if errors:
         raise SystemExit(f"{path}: " + "; ".join(errors))
     return state
@@ -181,10 +176,10 @@ def bundle_values(state: dict) -> dict[str, str]:
     """Each whole-value <key> in scripts/databricks.yml, and its value from the state file. The profile only locally:
     in a notebook the target has none."""
     values = {
-        "bundle_name": state["name"],
+        "bundle_name": state["job_name"],
         "catalog": state["catalog"],
         "schema": state["schema"],
-        "prefix": state["prefix"],
+        "table_prefix": state["table_prefix"],
     }
     if state.get("runtime", "local") == "local":
         values["profile"] = state["profile"]
@@ -361,17 +356,20 @@ def render_bundle(values: dict[str, str]) -> str:
     if list(jobs) != ["guardrail_eval"]:
         raise SystemExit(f"Rendered databricks.yml has jobs {list(jobs)}")
     job = jobs["guardrail_eval"]
+    if job.get("name") != "${bundle.name}":
+        raise SystemExit("Rendered databricks.yml's job must be named ${bundle.name}, the job_name")
     if [p["name"] for p in job.get("parameters") or []] != ["mode", "run_id"]:
         raise SystemExit("Rendered databricks.yml's job parameters aren't mode and run_id")
     tasks = {t["task_key"]: t for t in job["tasks"]}
     if list(tasks) != ["load_prompts", "run_eval"]:
         raise SystemExit(f"Rendered databricks.yml has tasks {list(tasks)}")
-    params = {"catalog": "${var.catalog}", "schema": "${var.schema}", "prefix": "${var.prefix}",
+    params = {"catalog": "${var.catalog}", "schema": "${var.schema}", "table_prefix": "${var.table_prefix}",
               "config": "${workspace.file_path}/src/eval_config.json"}
     for key, task in tasks.items():
         notebook = task.get("notebook_task") or {}
         if notebook.get("notebook_path") != f"src/{key}.py" or notebook.get("base_parameters") != params:
-            raise SystemExit(f"Rendered databricks.yml's {key} task isn't a notebook task on src/{key}.py with {params}")
+            raise SystemExit(f"Rendered databricks.yml's {key} task isn't a notebook task on src/{key}.py with "
+                             f"{params}")
     if tasks["run_eval"].get("depends_on") != [{"task_key": "load_prompts"}]:
         raise SystemExit("Rendered databricks.yml's run_eval task must depend on load_prompts")
     return body

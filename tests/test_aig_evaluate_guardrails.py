@@ -190,13 +190,13 @@ def test_run_ids():
 
 def test_job_widgets_become_flags():
     run_eval.dbutils = type("FakeDbutils", (), {"widgets": FakeWidgets({
-        "catalog": "main", "schema": "eval", "prefix": "guard", "config": "/Workspace/x/src/eval_config.json",
+        "catalog": "main", "schema": "eval", "table_prefix": "guard", "config": "/Workspace/x/src/eval_config.json",
         "mode": "full", "run_id": ""})})()
     try:
         args = run_eval.build_parser().parse_args(run_eval.notebook_argv(run_eval.build_parser()))
     finally:
         del run_eval.dbutils
-    assert (args.catalog, args.prefix, args.mode, args.run_id) == ("main", "guard", "full", "")
+    assert (args.catalog, args.table_prefix, args.mode, args.run_id) == ("main", "guard", "full", "")
 
 
 CONFIG = {"_rendered_by": "render.py", "services": [{"name": "main.eval.guard_model", "policies": ["eval_jailbreak"]}],

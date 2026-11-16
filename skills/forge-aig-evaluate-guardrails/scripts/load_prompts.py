@@ -10,18 +10,19 @@
 
 # COMMAND ----------
 
-"""Load the safety dataset into <prefix>_prompts (forge-aig-evaluate-guardrails module 01).
+"""Load the safety dataset into <table_prefix>_prompts (forge-aig-evaluate-guardrails module 01).
 
 First task of the evaluation job, before run_eval.py. It's a Databricks notebook: it runs as a serverless notebook
 task whose parameters arrive as widgets, or locally through Databricks Connect, with the same settings as flags:
 
     uv run --with "databricks-connect>=17" python load_prompts.py --catalog main --schema guardrail_eval \
-        --prefix guardrail_eval --config eval_config.json
+        --table-prefix guardrail_eval --config eval_config.json
 
 The dataset comes from eval_config.json (render.py writes it from guardrail-eval.json):
 - `default`: the test splits of nvidia/Aegis-AI-Content-Safety-Dataset-2.0 and lmsys/toxic-chat (toxicchat0124), each
-  pinned to a commit and checked against its sha256. They're staged in the volume <prefix>_datasets and downloaded from
-  Hugging Face only when they aren't there yet, so a workspace without egress can stage them with `databricks fs cp`.
+  pinned to a commit and checked against its sha256. They're staged in the volume <table_prefix>_datasets and
+  downloaded from Hugging Face only when they aren't there yet, so a workspace without egress can stage them with
+  `databricks fs cp`.
 - `table` or `file`: the user's own, with a prompt column, a label column whose block_values mean "should be blocked",
   and an optional category column.
 
@@ -77,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])  # a notebook has no __doc__
     p.add_argument("--catalog", required=True)
     p.add_argument("--schema", required=True)
-    p.add_argument("--prefix", required=True, help="Table prefix: writes <prefix>_prompts")
+    p.add_argument("--table-prefix", required=True, help="Table prefix: writes <table_prefix>_prompts")
     p.add_argument("--config", default="", help="eval_config.json, which render.py writes (default: next to this file)")
     return p
 
@@ -364,18 +365,18 @@ def main(argv: list[str] | None = None) -> None:
     for name in (args.catalog, args.schema):
         if not NAME_RE.match(name):
             raise SystemExit(f"Invalid name {name!r}: use letters, digits, '_' or '-'")
-    if not PREFIX_RE.match(args.prefix):
-        raise SystemExit(f"Invalid prefix {args.prefix!r}: use lowercase letters, digits, and '_'")
+    if not PREFIX_RE.match(args.table_prefix):
+        raise SystemExit(f"Invalid table_prefix {args.table_prefix!r}: use lowercase letters, digits, and '_'")
     spec = load_config(Path(args.config) if args.config else script_dir() / "eval_config.json").get("dataset")
     if errors := validate_dataset(spec):
         raise SystemExit("eval_config.json: " + "; ".join(errors))
 
     spark = get_spark()
-    table = f"`{args.catalog}`.`{args.schema}`.`{args.prefix}_prompts`"
+    table = f"`{args.catalog}`.`{args.schema}`.`{args.table_prefix}_prompts`"
     rows, summary = [], {}
     if spec["source"] == "default":
-        spark.sql(f"CREATE VOLUME IF NOT EXISTS `{args.catalog}`.`{args.schema}`.`{args.prefix}_datasets`")
-        volume_dir = f"/Volumes/{args.catalog}/{args.schema}/{args.prefix}_datasets"
+        spark.sql(f"CREATE VOLUME IF NOT EXISTS `{args.catalog}`.`{args.schema}`.`{args.table_prefix}_datasets`")
+        volume_dir = f"/Volumes/{args.catalog}/{args.schema}/{args.table_prefix}_datasets"
         files = VolumeFiles()
         for key in spec.get("defaults") or list(DEFAULT_DATASETS):
             records, redacted = default_records(key, parse_default(key, stage_default(files, volume_dir, key)))

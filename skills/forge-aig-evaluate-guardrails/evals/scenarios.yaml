@@ -17,7 +17,7 @@ defaults:
     - no_knowledge_assistant
     - no_information_extraction
     - no_prompt_text_in_report               # the report shows counts, rates, and category names, not the harmful prompts
-    - only_evaluation_services               # every service evaluated is named <prefix>_..., and nobody else holds a privilege on it
+    - only_evaluation_services               # every service evaluated is named <table_prefix>_..., and nobody else holds a privilege on it
     - services_created_by_create_skill       # forge-aig-create-model-service created them; this skill never wrote its files
 
 scenarios:
@@ -120,9 +120,9 @@ scenarios:
       licenses_approved: [aegis2]
     checks:
       - guardrail-eval.json and aig-model-services.json runtime == workspace, with no profile
-      - <workdir> is the notebook's folder, and holds the <name>/ bundle with no workspace profile in its target
+      - <workdir> is the notebook's folder, and holds the <job_name>/ bundle with no workspace profile in its target
       - job.py deploy created the job, with load_prompts and run_eval as notebook tasks on <file_path>/src/
       - job.py run --only load_prompts reported the summary as the task's output
       - sample_run.scored_rate >= thresholds.scored_rate
-      - after an edit to <name>/src/run_eval.py, job.py run stops until job.py deploy runs again
+      - after an edit to <job_name>/src/run_eval.py, job.py run stops until job.py deploy runs again
       - no step called the databricks CLI or uv

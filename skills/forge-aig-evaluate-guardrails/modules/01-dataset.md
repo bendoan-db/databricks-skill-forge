@@ -5,7 +5,7 @@ Set up the bundle-managed job, and load the evaluation's prompts into one table,
 ## Inputs → outputs
 
 - **Inputs:** `guardrail-eval.json` from module 00, with its `dataset` and `model_services`, and `forge-aig-create-model-service`'s `aig-model-services.json` and YAML files, which describe the services.
-- **Outputs:** the `<name>/` bundle, the job it defines (`guardrail_eval`), volume `<catalog>.<schema>.<prefix>_datasets`, and table `<catalog>.<schema>.<prefix>_prompts`: one row per prompt, with `dataset`, `expected` (BLOCK or ALLOW), and `categories`.
+- **Outputs:** the `<job_name>/` bundle, the job it defines (`guardrail_eval`), volume `<catalog>.<schema>.<table_prefix>_datasets`, and table `<catalog>.<schema>.<table_prefix>_prompts`: one row per prompt, with `dataset`, `expected` (BLOCK or ALLOW), and `categories`.
 
 ## Steps
 
@@ -15,12 +15,12 @@ Set up the bundle-managed job, and load the evaluation's prompts into one table,
    uv run <skill>/scripts/render.py --state <workdir>/guardrail-eval.json
    ```
 
-   This writes `<workdir>/<name>/databricks.yml` and `src/eval_config.json`, and copies the job's notebooks to `src/`. The config lists each service in `model_services` with the policies its entry in `model-services.yaml` lists, read from `forge-aig-create-model-service`'s files, which it never writes. It stops on a service that isn't in those files, isn't named `<prefix>_...`, is granted to anyone in `permissions.yaml`, or has a policy that only logs or redacts, and on services that skill hasn't applied yet. Its `warnings` name services that keep an inference table or rate limits: tell the user. To change a value later, edit `guardrail-eval.json`, or the services through `forge-aig-create-model-service`, and render again. The script stops rather than overwrite a rendered file that was edited by hand.
+   This writes `<workdir>/<job_name>/databricks.yml` and `src/eval_config.json`, and copies the job's notebooks to `src/`. The config lists each service in `model_services` with the policies its entry in `model-services.yaml` lists, read from `forge-aig-create-model-service`'s files, which it never writes. It stops on a service that isn't in those files, isn't named `<table_prefix>_...`, is granted to anyone in `permissions.yaml`, or has a policy that only logs or redacts, and on services that skill hasn't applied yet. Its `warnings` name services that keep an inference table or rate limits: tell the user. To change a value later, edit `guardrail-eval.json`, or the services through `forge-aig-create-model-service`, and render again. The script stops rather than overwrite a rendered file that was edited by hand.
 
 2. **Validate and deploy.** Deploying creates the job but doesn't run it. **Load:** `databricks-dabs` (validate, deploy, and run).
 
    ```bash
-   cd <workdir>/<name>
+   cd <workdir>/<job_name>
    databricks bundle validate --profile <profile>
    databricks bundle deploy --profile <profile>
    ```
@@ -28,10 +28,10 @@ Set up the bundle-managed job, and load the evaluation's prompts into one table,
    In a notebook (`runtime: workspace`), there's no CLI, so `job.py` deploys the bundle instead:
 
    ```python
-   forge_run("<skill>/scripts/job.py", "--state", "<workdir>/guardrail-eval.json", "deploy")
+   forge_run("<skill>/scripts/job.py", "--state", "<workdir>/guardrail-eval.json", "--bundle", "<workdir>/<job_name>", "deploy")
    ```
 
-   It imports the bundle's `src/` into the folder `bundle deploy` would use, `<file_path>/src/` (`file_path` is `/Workspace/Users/<user>/.bundle/<name>/default/files`), with the notebooks as notebooks, then creates the job from `databricks.yml`, or updates the one it created before. It prints the job's `job_id`, its `url`, and `file_path`. The bundle in `<workdir>/<name>/` stays the source: the user can edit it, and the next deploy reads it again.
+   It imports the bundle's `src/` into the folder `bundle deploy` would use, `<file_path>/src/` (`file_path` is `/Workspace/Users/<user>/.bundle/<job_name>/default/files`), with the notebooks as notebooks, then creates the job from `databricks.yml`, or updates the one it created before. It prints the job's `job_id` and `url`, under `jobs`, and `file_path`. The bundle in `<workdir>/<job_name>/` stays the source: the user can edit it, and the next deploy reads it again.
 
 3. **Load the prompts.** This is the dataset step the user approved in module 00. Run only its task:
 
@@ -42,14 +42,14 @@ Set up the bundle-managed job, and load the evaluation's prompts into one table,
    In a notebook:
 
    ```python
-   forge_run("<skill>/scripts/job.py", "--state", "<workdir>/guardrail-eval.json", "run", "--only", "load_prompts", "--wait")
+   forge_run("<skill>/scripts/job.py", "--state", "<workdir>/guardrail-eval.json", "--bundle", "<workdir>/<job_name>", "run", "--only", "load_prompts", "--wait")
    ```
 
-   The task creates the volume if it's missing, and replaces `<prefix>_prompts` on each run. Its output ends with a JSON summary per dataset: rows read, prompts kept, BLOCK and ALLOW, and what was dropped. In a notebook, `job.py` prints it as the task's `output`, with the run's `url`, once the run ends (`--wait`; if it's still running after 30 minutes, check again with `status --job-run-id <job_run_id>`).
+   The task creates the volume if it's missing, and replaces `<table_prefix>_prompts` on each run. Its output ends with a JSON summary per dataset: rows read, prompts kept, BLOCK and ALLOW, and what was dropped. In a notebook, `job.py` prints it as the task's `output`, with the run's `url`, once the run ends (`--wait`; if it's still running after 30 minutes, check again with `status --job-run-id <job_run_id>`).
 
 ## How the prompts are loaded
 
-- **The default datasets** are downloaded from huggingface.co at a fixed revision, into `/Volumes/<catalog>/<schema>/<prefix>_datasets/<dataset>/`, and checked against a sha256. A file already there with the right checksum isn't downloaded again.
+- **The default datasets** are downloaded from huggingface.co at a fixed revision, into `/Volumes/<catalog>/<schema>/<table_prefix>_datasets/<dataset>/`, and checked against a sha256. A file already there with the right checksum isn't downloaded again.
   - `aegis2`, Aegis 2.0's test split: BLOCK when `prompt_label` is `unsafe`. Its `violated_categories` (Violence, Hate/Identity Hate, PII/Privacy, Needs Caution, and others) become `categories`. Prompts that say `REDACTED` are dropped: their text isn't distributed with the dataset.
   - `toxicchat`, ToxicChat 0124's test split, real users' prompts: BLOCK when `toxicity` is 1, with category `toxicity`, plus `jailbreaking` when that's 1.
 - **The user's dataset** is read from their table or file with the column mapping from module 00. BLOCK when the label, lowercased, is one of `block_values`.
@@ -58,33 +58,33 @@ Set up the bundle-managed job, and load the evaluation's prompts into one table,
 
   ```bash
   curl -fL -o test.json "https://huggingface.co/datasets/nvidia/Aegis-AI-Content-Safety-Dataset-2.0/resolve/d86bb8bedff51d25ac834ab7838f1cc61acb7a2c/test.json"
-  databricks fs mkdir dbfs:/Volumes/<catalog>/<schema>/<prefix>_datasets/aegis2 --profile <profile>
-  databricks fs cp test.json dbfs:/Volumes/<catalog>/<schema>/<prefix>_datasets/aegis2/test.json --profile <profile>
+  databricks fs mkdir dbfs:/Volumes/<catalog>/<schema>/<table_prefix>_datasets/aegis2 --profile <profile>
+  databricks fs cp test.json dbfs:/Volumes/<catalog>/<schema>/<table_prefix>_datasets/aegis2/test.json --profile <profile>
   ```
 
   ToxicChat's file is `https://huggingface.co/datasets/lmsys/toxic-chat/resolve/29df8e4dba60e1f4af4b4075c0705c5b313548a8/data/0124/toxic-chat_annotation_test.csv`, staged as `toxicchat/toxic-chat_annotation_test.csv`.
 
 ## Editing the job's notebooks
 
-The job's tasks are Databricks notebooks (`load_prompts` and `run_eval`), deployed from `<workdir>/<name>/src/` to the bundle's folder in the workspace. `databricks bundle summary --profile <profile>` shows that folder as `file_path` (in a notebook, `job.py deploy` prints it); the notebooks are in its `src/`, without the `.py` extension. The user can open one there, change it, and run it by hand with the widgets at its top, which the job fills in on its runs.
+The job's tasks are Databricks notebooks (`load_prompts` and `run_eval`), deployed from `<workdir>/<job_name>/src/` to the bundle's folder in the workspace. `databricks bundle summary --profile <profile>` shows that folder as `file_path` (in a notebook, `job.py deploy` prints it); the notebooks are in its `src/`, without the `.py` extension. The user can open one there, change it, and run it by hand with the widgets at its top, which the job fills in on its runs.
 
 A deploy replaces the workspace copies with the local ones. To keep a change made in the workspace, export it into the bundle first:
 
 ```bash
-databricks workspace export <file_path>/src/<notebook> --format SOURCE --file <workdir>/<name>/src/<notebook>.py --profile <profile>
+databricks workspace export <file_path>/src/<notebook> --format SOURCE --file <workdir>/<job_name>/src/<notebook>.py --profile <profile>
 ```
 
-In a notebook (`runtime: workspace`), the bundle is already in the workspace. The user can edit its `<workdir>/<name>/src/<notebook>.py` there and ask for a run: deploy with `job.py` (step 2), then run. `job.py run` stops when the bundle changed since the last deploy, so an edit is never left out. A change made in a deployed notebook, in `<file_path>/src/`, is replaced by the next deploy: copy it into the bundle first, with the `workspace export` row of SKILL.md, In a notebook. Without Genie Code, the user can run the job again from its page, with **Run now with different settings** for `mode` and `run_id`.
+In a notebook (`runtime: workspace`), the bundle is already in the workspace. The user can edit its `<workdir>/<job_name>/src/<notebook>.py` there and ask for a run: deploy with `job.py` (step 2), then run. `job.py run` stops when the bundle changed since the last deploy, so an edit is never left out. A change made in a deployed notebook, in `<file_path>/src/`, is replaced by the next deploy: copy it into the bundle first, with the `workspace export` row of SKILL.md, In a notebook. Without Genie Code, the user can run the job again from its page, with **Run now with different settings** for `mode` and `run_id`.
 
 `render.py` keeps an edited copy when it renders again, and lists it under `kept_edited`. `--force` replaces it with the skill's version. A kept copy doesn't pick up later changes to the skill, so tell the user which files are kept.
 
 ## Verify
 
 ```sql
-SELECT dataset, expected, count(*) AS prompts FROM <catalog>.<schema>.<prefix>_prompts GROUP BY ALL ORDER BY ALL;
+SELECT dataset, expected, count(*) AS prompts FROM <catalog>.<schema>.<table_prefix>_prompts GROUP BY ALL ORDER BY ALL;
 
 SELECT dataset, category, count(*) AS prompts
-FROM <catalog>.<schema>.<prefix>_prompts LATERAL VIEW explode(categories) AS category
+FROM <catalog>.<schema>.<table_prefix>_prompts LATERAL VIEW explode(categories) AS category
 GROUP BY ALL ORDER BY prompts DESC LIMIT 20;
 ```
 
@@ -104,7 +104,7 @@ GROUP BY ALL ORDER BY prompts DESC LIMIT 20;
 | `render.py` says a file was edited by hand | Move the change into `guardrail-eval.json` and render again; `--force` discards the hand edit |
 | `render.py`: `aig-model-services.json not found`, or `hasn't applied the services` | Run or resume `forge-aig-create-model-service` in this folder (module 00, step 7) |
 | `render.py`: `isn't in .../model-services.yaml` | The service's entry is missing, or under another name: add it through `forge-aig-create-model-service` (module 00, step 7), or fix `model_services` |
-| `render.py`: `isn't named <prefix>_...` or `is granted to others` | The evaluation measures only services of its own. Evaluate a copy, named `<prefix>_<service>` and granted to nobody (module 00, step 1) |
+| `render.py`: `isn't named <table_prefix>_...` or `is granted to others` | The evaluation measures only services of its own. Evaluate a copy, named `<table_prefix>_<service>` and granted to nobody (module 00, step 1) |
 | `render.py`: `has runtime ... and guardrail-eval.json ...` | Both skills run in the same place: with the user, record the right `runtime` in the file that's wrong (module 00) |
 | `job.py`: `runtime is local` | Locally, deploy and run with the CLI (steps 2 and 3); `job.py` is for a notebook |
 | `job.py`: `The bundle changed since the last deploy` | Deploy again (step 2), then run |

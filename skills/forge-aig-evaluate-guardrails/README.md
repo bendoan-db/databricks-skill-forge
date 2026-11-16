@@ -2,9 +2,9 @@
 
 Measures how well Unity AI Gateway guardrails (service policies) block unsafe prompts on a labeled safety dataset. Users can provide a safety dataset. If the user does not provide a dataset, Forge will default to the Aegis 2.0 and ToxicChat test sets. The guardrails can be the built-in Sensitive Data Detection, Unsafe Content, and Jailbreak policies, or the user's own LLM-judge and SQL rules.
 - **Model services of its own:** the guardrails run on model services created just for the evaluation. This skill invokes the `forge-aig-create-model-service` forge skill, to create model services that back any llm-driven policy as well as the evaluation model service itself, so that nobody else's traffic is affected.
-- **Side by side:** several services, each with different guardrails or evaluators, get the same prompts in one run, so they compare directly.
-- **Real traffic:** a Databricks job sends every prompt through the gateway, the way an application would, and records which guardrail blocked each one.
-- **The scores:** recall, precision, false-positive rate, F1, and latency for each service, overall, per dataset, per harm category, and per guardrail.
+- **Side by side:** One evaluation can concurrently test several guardrail configurations on the same prompts, so users can compare guardrail configurations side by side on the same input.
+- **Real traffic:** A Databricks job sends every prompt through the gateway, the way an application would, and records which guardrail blocked each one.
+- **Metrics:** This skill tracks recall, precision, false-positive rate, F1, and latency for each service, overall, per dataset, per harm category, and per guardrail.
 
 ## Purpose
 
@@ -34,14 +34,12 @@ Its progress is saved in `guardrail-eval.json`. The user can run `/forge` in the
 - **Tools:**
   - locally: the Databricks CLI (v1.11.0 or later), signed in to the workspace, and `uv`;
   - in Genie Code: a notebook on serverless compute (environment 2 or later), and nothing else;
-  - either way, the `forge-aig-create-model-service` skill and the Databricks Agent Skills (v0.2.27 or later), installed next to this skill. The Forge installer sets these up, or in Genie Code, the `install_genie_code` notebook.
+  - the `forge-aig-create-model-service` skill and the Databricks Agent Skills (v0.2.27 or later), installed next to this skill. The Forge installer sets these up; for Databricks notebook + Genie code invocation, run the `install_genie_code` notebook.
 - **Privileges:**
   - `USE SCHEMA`, `CREATE TABLE`, and `CREATE VOLUME` on the target schema;
   - access to the user's dataset;
   - permission to create jobs;
-  - for the model services, what `forge-aig-create-model-service` checks: `CREATE SERVICE` on their schema, `EXECUTE` on the base model and each evaluator, and `CREATE FUNCTION` for SQL rules.
-
-  The skills check these first.
+  - If the user wants to create their own service, then they also need `CREATE SERVICE` on their schema, `EXECUTE` on the base model and each evaluator, and `CREATE FUNCTION` for SQL rules. The skills check these first.
 - **Default datasets:** they download from huggingface.co. Their licenses are stated before use: Aegis 2.0 is CC BY 4.0, and ToxicChat is CC BY-NC 4.0 (non-commercial only).
 
 **What it asks the user.** It needs the target schema, whether the user has a dataset of their own, and what to evaluate. It proposes the rest.
@@ -50,34 +48,32 @@ Its progress is saved in `guardrail-eval.json`. The user can run `/forge` in the
 |---|---|---|---|
 | `target_schema` | Yes | — | `<catalog>.<schema>` for the tables and the dataset volume, and for the model services when the working directory has none yet |
 | `dataset` | Yes | the default datasets | The user's labeled prompts (a table, or a CSV, JSON, JSON Lines, or Parquet file in a volume, with a prompt column and a label column), or none, to use Aegis 2.0 and ToxicChat |
-| `services` | No | the built-ins together, on one service | What to evaluate: the built-ins together, each built-in on its own, two evaluators, a copy of one of the user's services, or the user's own guardrails. Each setup is one or more services named `<prefix>_...` |
+| `services` | No | the built-ins together, on one service | What to evaluate: the built-ins together, each built-in on its own, two evaluators, a copy of one of the user's services, or the user's own guardrails. Each setup is one or more services named `<table_prefix>_...` |
 | `profile` | No | the user's CLI profile | The CLI profile every command uses, when it runs locally. In Genie Code, the notebook's user |
-| `name` | No | `guardrail-eval` | Names the bundle and the job |
-| `prefix` | No | `guardrail_eval` | Prefixes the tables, and starts every evaluation service's name, such as `<prefix>_model` |
+| `job_name` | No | `guardrail-eval` | Names the job, and the folder its bundle is in |
+| `table_prefix` | No | `guardrail_eval` | Starts the name of every table, the dataset volume, and every evaluation service, such as `<table_prefix>_prompts` and `<table_prefix>_model` |
 | `base_model` | No | `system.ai.databricks-claude-sonnet-5-5` | The model the evaluation's services route to. Only prompts the guardrails let through reach it |
-| `evaluators` | No | `system.ai.gemma-3-12b` (Unsafe Content), `system.ai.gpt-oss-20b` (Jailbreak) | The model services the built-in LLM-judged guardrails run on |
+| `default_evaluator_model` | No | `system.ai.gpt-oss-20b` | The model that judges the LLM-based guardrails, Jailbreak and the user's own LLM judges, unless one names its own. The built-in Unsafe Content guardrail uses `system.ai.gemma-3-12b` unless the user names another |
 | `sample_size` | No | 100 | Prompts per dataset and label in the first, sample run |
 | `concurrency` | No | 8 | Gateway calls in flight, across all the services |
-| `targets` | No | none | Rates the user needs, such as recall ≥ 0.9; reported as met or missed for each service |
 
 ## Outputs
 
 **In the workspace:**
-- **The evaluation's model services,** created by `forge-aig-create-model-service`: each `<prefix>_...`, routed to the base model, with exactly the guardrails under evaluation, no inference table, no rate limits, and no access for anyone else.
+- **The evaluation's model services,** created by `forge-aig-create-model-service`: each `<table_prefix>_...`, routed to the base model, with exactly the guardrails under evaluation, no inference table, no rate limits, and no access for anyone else.
 - **Tables,** in the target schema:
-  - `<prefix>_prompts`: one row per prompt, labeled block or allow;
-  - `<prefix>_results`: every prompt's verdict on each service, and the guardrail that blocked it;
-  - `<prefix>_metrics`: the scores, for each service.
-- **Dataset files:** the volume `<prefix>_datasets`.
-- **The job:** `<name>`, a Lakeflow job in a Declarative Automation Bundle that loads the prompts and runs the evaluation. Its tasks are notebooks the user can open and edit in the workspace. Locally, the Databricks CLI deploys the bundle; in Genie Code, the skill's `job.py` creates the job from it.
+  - `<table_prefix>_prompts`: one row per prompt, labeled block or allow;
+  - `<table_prefix>_results`: every prompt's verdict on each service, and the guardrail that blocked it;
+  - `<table_prefix>_metrics`: the scores, for each service.
+- **Dataset files:** the volume `<table_prefix>_datasets`.
+- **The job:** `<job_name>`, a Lakeflow job in a Declarative Automation Bundle that loads the prompts and runs the evaluation. Its tasks are notebooks the user can open and edit in the workspace. Locally, the Databricks CLI deploys the bundle; in Genie Code, the skill's `job.py` creates the job from it.
 - **MLflow runs:** one per service in each evaluation run, tagged with the run's id, so they compare side by side.
 - **A report:**
   - with several services, a table comparing them;
   - for each service, recall, precision, false-positive rate, and F1, overall and per dataset;
   - each guardrail's blocks and false positives;
   - the categories with the lowest recall;
-  - latency;
-  - each target, met or missed.
+  - latency.
 
 **In the working directory:**
 
@@ -87,12 +83,12 @@ Its progress is saved in `guardrail-eval.json`. The user can run `/forge` in the
 ├── guardrail-eval.json      # the evaluation's settings
 ├── aig-model-services.json  # the model services' settings (forge-aig-create-model-service)
 ├── ai-gateway/              # the YAML files that describe the services and their guardrails
-└── <name>/                  # the job's bundle, which the user can edit
+└── <job_name>/                  # the job's bundle, which the user can edit
 ```
 
 **The bundle is the user's to keep.** It's in the working directory either way. To change the job, the user edits it (`databricks.yml`, or a notebook in `src/`), and asks the assistant to deploy and run again; in Genie Code, a run stops until the edit is deployed. Without the assistant, they can run the job from its page, with **Run now with different settings** for a full run (`mode`) or to resume one (`run_id`), or deploy the bundle with the Databricks CLI.
 
-**When it's done.** A full run scores at least 98% of its prompts for every service (scored rate ≥ 0.98), so the rates are reliable. How good the guardrails must be is the user's call: their targets are reported as met or missed, and never fail the run.
+**When it's done.** A full run scores at least 98% of its prompts for every service (scored rate ≥ 0.98), so the rates are reliable. How good the guardrails must be is the user's call: the report gives the rates, and only an incomplete run fails.
 
 ## How It Works
 

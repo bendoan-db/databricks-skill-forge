@@ -69,7 +69,7 @@ Each skill's folder has a `README.md`, its overview for Databricks users: what i
 
 - Databricks CLI v1.11.0 or later, with an authenticated profile. The installer was tested with v1.20.0. Some agents need newer versions for AI Dev Kit to target them: Gemini CLI needs v1.12.0, and Kiro needs v1.20.0.
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/).
-- In Genie Code, in a notebook, `forge-aig-evaluate-guardrails` and `forge-aig-create-model-service` need none of the above: they run in the notebook, on serverless compute (see [Genie Code](#genie-code)).
+- In Genie Code, in a notebook, `forge-aig-evaluate-guardrails`, `forge-aig-create-model-service`, and `forge-structured-doc-extraction` need none of the above: they run in the notebook, on serverless compute (see [Genie Code](#genie-code)).
 - macOS or Linux with `bash`, `curl`, and `tar`; or Windows 10 (1803) or later with PowerShell 5.1 or 7.
 - The Databricks Agent Skills (v0.2.27 or later), as skill folders in the same skills directory as `forge` and the use-case skills. The installer sets this up.
 - A Unity Catalog workspace with serverless compute, and permission to create jobs. `forge-unstructured-doc-extraction` also needs AI Search endpoints (or an existing endpoint), and `forge-doc-qa-agent` needs Databricks Apps. Word-level localization in `forge-structured-doc-extraction` needs a classic job cluster, and its review app needs Lakebase, Databricks Apps, Node.js 20+, and psql. `forge-aig-evaluate-guardrails` needs the Unity Gateway Service Policies preview, which a workspace admin enables, and egress to huggingface.co for its default datasets; it runs `forge-aig-create-model-service` to create the services it measures. Each skill checks the exact privileges during preflight.
@@ -143,7 +143,7 @@ It skips the MLflow skills and the MCP server, because no Forge skill needs them
 
 **The Genie Code CLI** reads skills only from your computer. Copy what the notebook installed with `databricks workspace export-dir /Users/<you>/.assistant/skills ~/.genie/skills --overwrite --profile <profile>`. Or, for one project, run the local installer with `--tools codex --no-mcp`: it writes `.agents/skills/`, which the CLI also reads. The Forge scripts need `uv` on your computer.
 
-**In a notebook:** `forge-aig-evaluate-guardrails` and `forge-aig-create-model-service` run in Genie Code in a notebook without the CLI or `uv`. Open a notebook in the folder the project should live in, on serverless compute, and start `@forge` there: the notebook's folder is the working directory, and Genie Code runs each script in the notebook's cells, as you. The evaluation writes its job as a bundle in that folder and creates the job from it; the bundle stays there for you to edit, and you can run the job again from its page or ask Genie Code to. This hasn't been tried in a workspace yet. The other use-case skills run their scripts with `uv run` and deploy with the `databricks` CLI: with the Genie Code CLI, both run on your computer, but in a notebook a build can stop at those steps.
+**In a notebook:** `forge-aig-evaluate-guardrails`, `forge-aig-create-model-service`, and `forge-structured-doc-extraction` run in Genie Code in a notebook without the CLI or `uv`. Open a notebook in the folder the project should live in, on serverless compute, and start `@forge` there: the notebook's folder is the working directory, and Genie Code runs each script in the notebook's cells, as you. A skill with a job writes it as a bundle in that folder and creates the job from it; the bundle stays there for you to edit, and you can run the job again from its page or ask Genie Code to. The structured extraction's review app is generated as code, with a README on deploying it from the workspace, which you follow yourself. This hasn't been tried in a workspace yet. The other use-case skills run their scripts with `uv run` and deploy with the `databricks` CLI: with the Genie Code CLI, both run on your computer, but in a notebook a build can stop at those steps.
 
 ## Use
 
@@ -215,7 +215,7 @@ The agent asks before parsing, extracting, re-extracting, starting the OCR clust
 | 02 | Guardrails | Each service checked: exactly its guardrails, all blocking, nobody else's; then a pass check and a block check |
 | 03 | Evaluate | A sample run, then a full run, on every service, gated on at least 98% of prompts scored for each, and the report: the services compared, and recall, precision, false-positive rate, and F1 overall, per dataset, per category, and per guardrail, in MLflow |
 
-The agent asks before staging the datasets and each evaluation run, and `forge-aig-create-model-service` asks before it creates the services. It never sends the prompts to a service other people use, and keeps them, since they're harmful by design, out of its reports. Settings are saved to `guardrail-eval.json`, the services' YAML files to `ai-gateway/`, and the job is `<name>/`.
+The agent asks before staging the datasets and each evaluation run, and `forge-aig-create-model-service` asks before it creates the services. It never sends the prompts to a service other people use, and keeps them, since they're harmful by design, out of its reports. Settings are saved to `guardrail-eval.json`, the services' YAML files to `ai-gateway/`, and the job's bundle to `<job_name>/`.
 
 ### Model services and access
 

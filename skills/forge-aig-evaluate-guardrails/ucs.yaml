@@ -12,7 +12,7 @@ source:
   ported: the gateway calls and fail-closed rule, scoring, MLflow logging   # creating the model service moved to forge-aig-create-model-service (0.2.0)
 inputs:
   required: [target_schema, dataset]        # dataset: module 00 asks; without one, the default datasets
-  optional: [services, profile, name, prefix, base_model, evaluators, sample_size, concurrency, targets]
+  optional: [services, profile, job_name, table_prefix, base_model, default_evaluator_model, sample_size, concurrency]
 requires:                                   # use-case skills this one runs first; check_base_skills.py checks them too
   - name: forge-aig-create-model-service
     version: 0.2.0                          # runtime workspace: its scripts sign in as the notebook's user
@@ -20,6 +20,7 @@ requires:                                   # use-case skills this one runs firs
 shared:                                     # identical in every skill that carries them; tests/test_skills.py checks
   - scripts/check_base_skills.py
   - scripts/write_readme.py
+  - scripts/job.py                         # with forge-structured-doc-extraction
 
 catalog:                                    # forge's use-case table; tools/build_forge_catalog.py renders it into skills/forge/SKILL.md
   title: Guardrail evaluation
@@ -114,9 +115,9 @@ facts:
     evidence:
       - url: https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/create-service-policy
         checked: 2026-11-12                  # log mode and redaction as the docs describe them; that a redaction leaves no marker in the reply isn't confirmed in a workspace
-  - fact: The default evaluators are system.ai.gemma-3-12b (Unsafe Content) and system.ai.gpt-oss-20b (Jailbreak)
+  - fact: The default evaluator (default_evaluator_model) is system.ai.gpt-oss-20b, and the built-in Unsafe Content guardrail's own is system.ai.gemma-3-12b
     kind: heuristic                          # the source's tested choices; the docs say the form preselects a default without naming it
-    used_in: [SKILL.md, modules/00-preflight.md]
+    used_in: [SKILL.md, modules/00-preflight.md, modules/02-guardrails.md, README.md]
     evidence: []
   - fact: The default datasets are Aegis 2.0's test split (revision d86bb8b, CC BY 4.0) and ToxicChat 0124's test split (revision 29df8e4, CC BY-NC 4.0), checked by sha256
     used_in: [scripts/load_prompts.py, SKILL.md, modules/00-preflight.md, modules/01-dataset.md]

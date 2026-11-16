@@ -6,18 +6,17 @@
 
     uv run <skill>/scripts/evaluate.py --state <workdir>/guardrail-eval.json [--run-id <id>]
 
-Reads the run's rows in <catalog>.<schema>.<prefix>_metrics through the SQL warehouse in the state file (by default
-the latest run with mode `full`), and prints, with several model services, a table comparing them first, then for each:
+Reads the run's rows in <catalog>.<schema>.<table_prefix>_metrics through the SQL warehouse in the state file (by
+default the latest run with mode `full`), and prints, with several model services, a table comparing them first, then
+for each:
 - overall and per dataset: recall, precision, false-positive rate, F1, accuracy, errors, and latency;
 - per policy: the blocks it made, and how many were false positives;
-- the 10 categories with the lowest recall;
-- each of the user's `targets`, met or missed.
+- the 10 categories with the lowest recall.
 
 THRESHOLDS gates the run itself, not the guardrails: for each service, the share of prompts that got a verdict from the
 gateway (`scored_rate`; an ERROR row, a call that failed after its retries, has none). Below the floor the metrics
 aren't trustworthy. A service in `model_services` that the run didn't evaluate fails too. Either way, the script exits
-with status 1. A missed target is reported, not a failure: the targets are the user's bar for the guardrails, and this
-skill measures them rather than tuning them.
+with status 1. How good the guardrails must be is the user's call: this skill measures them rather than tuning them.
 """
 
 import argparse
@@ -27,7 +26,6 @@ from pathlib import Path
 
 THRESHOLDS = {"scored_rate": 0.98}
 RATES = ("recall", "precision", "fp_rate", "f1", "accuracy")
-CEILINGS = {"fp_rate"}  # a target for these is a maximum; for the other rates, a minimum
 COUNTS = ("n", "expected_block", "expected_allow", "blocked", "tp", "fn", "fp", "tn", "errors")
 NUMERIC = (*COUNTS, *RATES, "latency_p50_ms", "latency_p95_ms")
 UNNAMED = "(the model service)"  # rows written before services were compared have no model_service
@@ -94,18 +92,6 @@ def threshold_failures(overall_row: dict | None) -> list[str]:
     return []
 
 
-def target_results(rows: list[dict], targets: dict | None) -> list[dict]:
-    """Each target against the run's overall value: {metric, target, kind, value, met}."""
-    row = overall(rows) or {}
-    results = []
-    for metric, target in (targets or {}).items():
-        value = row.get(metric)
-        kind = "ceiling" if metric in CEILINGS else "floor"
-        met = value is not None and (value <= target if kind == "ceiling" else value >= target)
-        results.append({"metric": metric, "target": target, "kind": kind, "value": value, "met": met})
-    return results
-
-
 def pct(value) -> str:
     return "-" if value is None else f"{100 * value:.1f}%"
 
@@ -114,7 +100,7 @@ def ms(value) -> str:
     return "-" if value is None else f"{value / 1000:.1f} s"
 
 
-def service_report(rows: list[dict], targets: dict | None) -> list[str]:
+def service_report(rows: list[dict]) -> list[str]:
     """One service's part of the report."""
     lines = []
     head = overall(rows)
@@ -134,17 +120,14 @@ def service_report(rows: list[dict], targets: dict | None) -> list[str]:
     categories = sorted((r for r in rows if r.get("breakdown") == "category" and r.get("recall") is not None),
                         key=lambda r: (r["recall"], -(r.get("n") or 0)))[:10]
     if categories:
-        lines += ["", "Lowest recall by category:", "", "| Dataset | Category | Prompts | Recall |", "|---|---|---:|---:|"]
-        lines += [f"| {r.get('dataset')} | {r.get('group_name')} | {r.get('n')} | {pct(r.get('recall'))} |" for r in categories]
-    checked = target_results(rows, targets)
-    if checked:
-        lines += ["", "| Target | Wanted | Measured | Met |", "|---|---:|---:|---|"]
-        lines += [f"| {t['metric']} | {'≤' if t['kind'] == 'ceiling' else '≥'} {pct(t['target'])} | {pct(t['value'])} | "
-                  f"{'yes' if t['met'] else 'no'} |" for t in checked]
+        lines += ["", "Lowest recall by category:", "", "| Dataset | Category | Prompts | Recall |",
+                  "|---|---|---:|---:|"]
+        lines += [f"| {r.get('dataset')} | {r.get('group_name')} | {r.get('n')} | {pct(r.get('recall'))} |"
+                  for r in categories]
     return lines
 
 
-def report(rows: list[dict], targets: dict | None) -> str:
+def report(rows: list[dict]) -> str:
     """The run's report as text: with several services, a table comparing them, then each service's part."""
     groups = by_service(rows)
     first = overall(rows) or {}
@@ -159,25 +142,21 @@ def report(rows: list[dict], targets: dict | None) -> str:
                          f"{pct(head.get('fp_rate'))} | {pct(head.get('f1'))} | {head.get('errors')} | "
                          f"{pct(scored_rate(head) if head else None)} | {ms(head.get('latency_p50_ms'))} |")
     for name, group in groups.items():
-        lines += ["", f"### {name}", "", *service_report(group, targets)]
+        lines += ["", f"### {name}", "", *service_report(group)]
     return "\n".join(lines)
 
 
 def outcome(rows: list[dict], state: dict) -> dict:
-    """The gate and the targets, for each service: {services, thresholds_met, failures, targets_met}."""
+    """The gate, for each service: {services, thresholds_met, failures}."""
     groups = by_service(rows)
     services, failures = {}, []
     for name, group in groups.items():
         missed = threshold_failures(overall(group))
-        checked = target_results(group, state.get("targets"))
-        services[name] = {"scored_rate": scored_rate(overall(group) or {}), "failures": missed,
-                          "targets_met": all(t["met"] for t in checked) if checked else None}
+        services[name] = {"scored_rate": scored_rate(overall(group) or {}), "failures": missed}
         failures += [f"{name}: {f}" for f in missed]
     failures += [f"{name} isn't in this run: run the evaluation again, so it covers every service in model_services"
                  for name in state.get("model_services") or [] if name not in groups and UNNAMED not in groups]
-    met = [s["targets_met"] for s in services.values() if s["targets_met"] is not None]
-    return {"services": services, "thresholds_met": not failures, "failures": failures,
-            "targets_met": all(met) if met else None}
+    return {"services": services, "thresholds_met": not failures, "failures": failures}
 
 
 def typed(row: dict) -> dict:
@@ -199,7 +178,8 @@ def query(w, warehouse_id: str, statement: str, parameters: dict) -> list[dict]:
     while response.status.state in (StatementState.PENDING, StatementState.RUNNING):
         response = w.statement_execution.get_statement(response.statement_id)
     if response.status.state != StatementState.SUCCEEDED:
-        raise SystemExit(f"Query failed: {response.status.error.message if response.status.error else response.status.state}")
+        error = response.status.error
+        raise SystemExit(f"Query failed: {error.message if error else response.status.state}")
     names = [c.name for c in response.manifest.schema.columns]
     data = list((response.result and response.result.data_array) or [])
     chunk = response.result
@@ -214,12 +194,12 @@ def main() -> None:
     if not args.state.is_file():
         sys.exit(f"{args.state} not found. Module 00 writes it; run preflight first.")
     state = json.loads(args.state.read_text())
-    errors = runtime_errors(state) + [f"{k} is missing or empty"
-                                      for k in ("catalog", "schema", "prefix", "warehouse_id") if not state.get(k)]
+    keys = ("catalog", "schema", "table_prefix", "warehouse_id")
+    errors = runtime_errors(state) + [f"{k} is missing or empty" for k in keys if not state.get(k)]
     if errors:
         sys.exit(f"{args.state}: " + "; ".join(errors) + " (module 00 records them)")
     w = workspace_client(state)
-    table = f"`{state['catalog']}`.`{state['schema']}`.`{state['prefix']}_metrics`"
+    table = f"`{state['catalog']}`.`{state['schema']}`.`{state['table_prefix']}_metrics`"
     run_id = args.run_id
     if not run_id:
         latest = query(w, state["warehouse_id"],
@@ -231,7 +211,7 @@ def main() -> None:
                                     {"run_id": run_id})]
     if not rows:
         sys.exit(f"No metrics for run {run_id} in {table}.")
-    print(report(rows, state.get("targets")))
+    print(report(rows))
     result = outcome(rows, state)
     print(json.dumps({"run_id": run_id, **result}))
     sys.exit(0 if result["thresholds_met"] else 1)

@@ -2,7 +2,6 @@
 render.py, job.py, and scripts/databricks.yml, and its handoff to forge-aig-create-model-service. No workspace: the
 REST client is a stand-in. The job notebooks are tested in test_aig_evaluate_guardrails.py."""
 
-import copy
 import json
 import re
 import shutil
@@ -10,11 +9,10 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import yaml
-from conftest import SKILLS_DIR, load_script
+from conftest import SKILLS_DIR, FakeJobsWorkspace, load_script
 
 SKILL = "forge-aig-evaluate-guardrails"
 SCRIPTS = SKILLS_DIR / SKILL / "scripts"
@@ -29,8 +27,8 @@ STATE = {
     "profile": "DEFAULT",
     "catalog": "main",
     "schema": "guardrail_eval",
-    "prefix": "guardrail_eval",
-    "name": "guardrail-eval",
+    "table_prefix": "guardrail_eval",
+    "job_name": "guardrail-eval",
     "warehouse_id": "abc123",
     "dataset": {"source": "default"},
     "services_state": "aig-model-services.json",
@@ -40,7 +38,6 @@ STATE = {
     "sample_size": 100,
     "settle_minutes": 5,
     "experiment": "/Users/someone@example.com/guardrail-eval",
-    "targets": {"recall": 0.9, "fp_rate": 0.1},
     "completed": [],
 }
 ME = "someone@example.com"
@@ -276,25 +273,18 @@ def test_thresholds():
     assert evaluate.threshold_failures(None) == ["the run has no overall metrics row"]
 
 
-def test_target_results_treat_fp_rate_as_a_ceiling():
-    results = evaluate.target_results(ROWS, {"recall": 0.95, "fp_rate": 0.1, "precision": 0.9})
-    assert [(r["metric"], r["kind"], r["met"]) for r in results] == [
-        ("recall", "floor", False), ("fp_rate", "ceiling", True), ("precision", "floor", True)]
-    assert evaluate.target_results(ROWS, None) == []
-
-
 def test_report_for_one_service():
-    text = evaluate.report(ROWS, {"recall": 0.95})
+    text = evaluate.report(ROWS)
     assert text.startswith("Run eval-full-202611021200 (full), 1 model service\n")
     assert "| Service |" not in text  # no comparison with one service
     assert f"### {SERVICE}" in text and "1000 prompts, 5 errors, scored rate 99.5%" in text
     assert "| aegis2 | 400 | 95.0% |" in text and "| eval_unsafe_content | 300 | 10 |" in text
     assert text.index("Hate/Identity Hate") < text.index("Violence")  # lowest recall first
-    assert "| recall | ≥ 95.0% | 90.0% | no |" in text
+    assert "| Target |" not in text  # rates are reported, not judged against targets
 
 
 def test_report_compares_services():
-    text = evaluate.report(ROWS + OTHER_ROWS, None)
+    text = evaluate.report(ROWS + OTHER_ROWS)
     assert "2 model services" in text.splitlines()[0]
     assert f"| {SERVICE} | 1000 | 90.0% | 91.8% | 8.1% | 90.9% | 5 | 99.5% | 1.3 s |" in text
     assert f"| {OTHER} | 1000 | 75.0% |" in text
@@ -302,11 +292,11 @@ def test_report_compares_services():
 
 
 def test_outcome_gates_each_service_and_needs_every_one():
-    state = {"model_services": [SERVICE, OTHER], "targets": {"recall": 0.8}}
+    state = {"model_services": [SERVICE, OTHER]}
     result = evaluate.outcome(ROWS + OTHER_ROWS, state)
     assert not result["thresholds_met"] and result["failures"][0].startswith(f"{OTHER}: scored_rate=0.910")
-    assert result["services"][SERVICE] == {"scored_rate": 0.995, "failures": [], "targets_met": True}
-    assert result["services"][OTHER]["targets_met"] is False and result["targets_met"] is False
+    assert result["services"][SERVICE] == {"scored_rate": 0.995, "failures": []}
+    assert "targets_met" not in result
     missing = evaluate.outcome(ROWS, state)
     assert missing["failures"] == [f"{OTHER} isn't in this run: run the evaluation again, so it covers every service "
                                    "in model_services"]
@@ -383,15 +373,16 @@ def test_render_writes_the_bundle_and_config(scripts: Path, tmp_path: Path):
     parsed = yaml.safe_load((bundle / "databricks.yml").read_text())
     assert parsed["bundle"]["name"] == "guardrail-eval" and parsed["targets"]["default"]["workspace"]["profile"] == "DEFAULT"
     assert {k: v["default"] for k, v in parsed["variables"].items()} == {
-        "catalog": "main", "schema": "guardrail_eval", "prefix": "guardrail_eval"}
+        "catalog": "main", "schema": "guardrail_eval", "table_prefix": "guardrail_eval"}
     job = parsed["resources"]["jobs"]["guardrail_eval"]
+    assert job["name"] == "${bundle.name}"  # the job is named job_name
     assert [p["name"] for p in job["parameters"]] == ["mode", "run_id"] and "trigger" not in job
     tasks = {t["task_key"]: t for t in job["tasks"]}
     assert list(tasks) == ["load_prompts", "run_eval"] and "environments" not in job
     for key, task in tasks.items():
         assert task["notebook_task"]["notebook_path"] == f"src/{key}.py" and "environment_key" not in task
         assert task["notebook_task"]["base_parameters"] == {
-            "catalog": "${var.catalog}", "schema": "${var.schema}", "prefix": "${var.prefix}",
+            "catalog": "${var.catalog}", "schema": "${var.schema}", "table_prefix": "${var.table_prefix}",
             "config": "${workspace.file_path}/src/eval_config.json"}
     assert tasks["run_eval"]["max_retries"] == 0 and tasks["run_eval"]["disable_auto_optimization"] is True
     config = json.loads((bundle / "src" / "eval_config.json").read_text())
@@ -442,8 +433,9 @@ def test_render_protects_a_hand_edited_config_and_keeps_an_edited_notebook(scrip
 
 
 @pytest.mark.parametrize("change, message", [
-    ({"name": "Guardrail_Eval"}, "name="),
-    ({"prefix": "Bad-Prefix"}, "prefix="),
+    ({"job_name": "Guardrail_Eval"}, "job_name="),
+    ({"table_prefix": "Bad-Prefix"}, "table_prefix="),
+    ({"job_name": None}, "job_name is missing"),
     ({"model_services": ["svc"]}, "model_services: 'svc'"),
     ({"model_services": []}, "model_services is missing"),
     ({"model_services": ["main.prod.team_chat"]}, "isn't named guardrail_eval_..."),
@@ -451,8 +443,6 @@ def test_render_protects_a_hand_edited_config_and_keeps_an_edited_notebook(scrip
     ({"services_state": "../elsewhere.json"}, "services_state="),
     ({"experiment": "guardrail-eval"}, "experiment="),
     ({"concurrency": 0}, "concurrency="),
-    ({"targets": {"latency": 1}}, "targets.latency"),
-    ({"targets": {"recall": 1.5}}, "targets.recall="),
     ({"dataset": {"source": "hub"}}, "dataset.source="),
     ({"dataset": {"source": "default", "defaults": ["aegis3"]}}, "dataset.defaults="),
     ({"dataset": {"source": "table", "table": "t", "prompt_column": "text", "label_column": "label",
@@ -547,50 +537,6 @@ def test_the_scripts_sign_in_without_a_profile_in_a_notebook(tmp_path: Path):
 FILE_PATH = f"/Workspace/Users/{ME}/.bundle/guardrail-eval/default/files"
 
 
-class FakeWorkspace:
-    """The Jobs, Workspace, and SCIM APIs, as far as job.py uses them, keeping the jobs, files, and runs it's sent."""
-
-    def __init__(self):
-        self.config = SimpleNamespace(host="https://example.cloud.databricks.com/")
-        self.api_client = self
-        self.jobs, self.files, self.started, self.runs, self.outputs = {}, {}, [], {}, {}
-        self.next_id = 100
-
-    def new_id(self) -> int:
-        self.next_id += 1
-        return self.next_id
-
-    def do(self, method, path, query=None, body=None):
-        if path == job.SCIM_ME:
-            return {"userName": ME}
-        if path == f"{job.WORKSPACE}/mkdirs":
-            return {}
-        if path == f"{job.WORKSPACE}/import":
-            self.files[body["path"]] = body
-            return {}
-        if path == f"{job.JOBS}/list":
-            found = [{"job_id": i} for i, settings in self.jobs.items()
-                     if settings["name"].lower() == query["name"].lower()]
-            return {"jobs": found} if found else {}
-        if path == f"{job.JOBS}/get":
-            return {"job_id": query["job_id"], "settings": copy.deepcopy(self.jobs[query["job_id"]])}
-        if path == f"{job.JOBS}/create":
-            job_id = self.new_id()
-            self.jobs[job_id] = copy.deepcopy(body)
-            return {"job_id": job_id}
-        if path == f"{job.JOBS}/reset":
-            self.jobs[body["job_id"]] = copy.deepcopy(body["new_settings"])
-            return {}
-        if path == f"{job.JOBS}/run-now":
-            self.started.append(body)
-            return {"run_id": self.new_id()}
-        if path == f"{job.JOBS}/runs/get":
-            return self.runs.get(query["run_id"], {"state": {"life_cycle_state": "PENDING"}, "tasks": []})
-        if path == f"{job.JOBS}/runs/get-output":
-            return self.outputs.get(query["run_id"], {})
-        raise AssertionError(f"unexpected {method} {path}")
-
-
 @pytest.fixture
 def notebook_bundle(scripts: Path, tmp_path: Path) -> Path:
     """A bundle rendered in a notebook (runtime workspace): the state file's path."""
@@ -600,19 +546,24 @@ def notebook_bundle(scripts: Path, tmp_path: Path) -> Path:
     return state
 
 
+def bundle_dir(state: Path) -> Path:
+    return state.parent / "guardrail-eval"
+
+
 def test_job_settings_are_the_bundles_job_with_deployed_notebook_paths(notebook_bundle: Path):
-    bundle = job.read_bundle(notebook_bundle.parent / "guardrail-eval")
-    key, settings = job.job_settings(bundle, FILE_PATH)
-    assert key == "guardrail_eval" and settings["name"] == "guardrail eval guardrail_eval"
+    jobs = job.job_settings(job.read_bundle(bundle_dir(notebook_bundle)), FILE_PATH, ME)
+    assert list(jobs) == ["guardrail_eval"]
+    settings = jobs["guardrail_eval"]
+    assert settings["name"] == "guardrail-eval"  # the job_name
     assert settings["max_concurrent_runs"] == 1 and settings["queue"] == {"enabled": True}
     assert settings["parameters"] == [{"name": "mode", "default": "sample"}, {"name": "run_id", "default": ""}]
-    assert settings["tags"] == {"forge_bundle": "guardrail-eval"}
+    assert settings["tags"] == {"forge_bundle": "guardrail-eval", "forge_job": "guardrail_eval"}
     tasks = {t["task_key"]: t for t in settings["tasks"]}
     assert list(tasks) == ["load_prompts", "run_eval"]
     for task_key, task in tasks.items():
         assert task["notebook_task"] == {
             "notebook_path": f"{FILE_PATH}/src/{task_key}", "source": "WORKSPACE",
-            "base_parameters": {"catalog": "main", "schema": "guardrail_eval", "prefix": "guardrail_eval",
+            "base_parameters": {"catalog": "main", "schema": "guardrail_eval", "table_prefix": "guardrail_eval",
                                 "config": f"{FILE_PATH}/src/eval_config.json"}}
     assert tasks["run_eval"]["depends_on"] == [{"task_key": "load_prompts"}]
     assert tasks["run_eval"]["max_retries"] == 0 and tasks["run_eval"]["disable_auto_optimization"] is True
@@ -620,7 +571,7 @@ def test_job_settings_are_the_bundles_job_with_deployed_notebook_paths(notebook_
 
 
 @pytest.mark.parametrize("change, message", [
-    (lambda j: j["tasks"][0].update(spark_python_task={"python_file": "src/x.py"}), "only notebook tasks"),
+    (lambda j: j["tasks"][0].update(spark_python_task={"python_file": "src/x.py"}), "only notebook and pipeline tasks"),
     (lambda j: j["tasks"][0]["notebook_task"].update(notebook_path="../elsewhere.py"), "must be src/<file>.py"),
     (lambda j: j["tasks"][0]["notebook_task"].update(notebook_path="src/../../x.py"), "must be src/<file>.py"),
     (lambda j: j.update(permissions=[{"group_name": "users", "level": "CAN_VIEW"}]),
@@ -628,80 +579,73 @@ def test_job_settings_are_the_bundles_job_with_deployed_notebook_paths(notebook_
     (lambda j: j.update(description="${resources.jobs.other.id}"), "${resources.jobs.other.id} can't be resolved"),
 ])
 def test_job_settings_stop_on_what_only_the_cli_deploys(notebook_bundle: Path, change, message):
-    bundle = job.read_bundle(notebook_bundle.parent / "guardrail-eval")
+    bundle = job.read_bundle(bundle_dir(notebook_bundle))
     change(bundle["resources"]["jobs"]["guardrail_eval"])
     with pytest.raises(SystemExit, match=re.escape(message)):
-        job.job_settings(bundle, FILE_PATH)
+        job.job_settings(bundle, FILE_PATH, ME)
 
 
 def test_deploy_imports_the_notebooks_and_creates_then_updates_one_job(notebook_bundle: Path):
-    w = FakeWorkspace()
-    state, workdir = json.loads(notebook_bundle.read_text()), notebook_bundle.parent
-    first = job.deploy(w, state, workdir)
-    assert first["action"] == "created" and first["file_path"] == FILE_PATH and first["warnings"] == []
-    assert first["url"] == f"https://example.cloud.databricks.com/jobs/{first['job_id']}"
+    w = FakeJobsWorkspace(ME)
+    first = job.deploy(w, bundle_dir(notebook_bundle))
+    created = first["jobs"]["guardrail_eval"]
+    assert created["action"] == "created" and first["file_path"] == FILE_PATH and first["warnings"] == []
+    assert created["url"] == f"https://example.cloud.databricks.com/jobs/{created['job_id']}"
     imported = {path: (body["format"], body.get("language")) for path, body in w.files.items()}
     assert imported == {f"{FILE_PATH}/src/load_prompts": ("SOURCE", "PYTHON"),
                         f"{FILE_PATH}/src/run_eval": ("SOURCE", "PYTHON"),
                         f"{FILE_PATH}/src/eval_config.json": ("AUTO", None)}
-    config = json.loads(base64_text(w.files[f"{FILE_PATH}/src/eval_config.json"]["content"]))
+    config = json.loads(w.file_text(f"{FILE_PATH}/src/eval_config.json"))
     assert config["services"] == [{"name": SERVICE, "policies": EVAL_POLICIES}]
-    second = job.deploy(w, state, workdir)
-    assert second["action"] == "updated" and second["job_id"] == first["job_id"] and len(w.jobs) == 1
-
-
-def base64_text(content: str) -> str:
-    import base64
-
-    return base64.b64decode(content).decode()
+    second = job.deploy(w, bundle_dir(notebook_bundle))["jobs"]["guardrail_eval"]
+    assert second["action"] == "updated" and second["job_id"] == created["job_id"] and len(w.jobs) == 1
 
 
 def test_deploy_leaves_other_jobs_of_the_same_name_alone(notebook_bundle: Path):
-    w = FakeWorkspace()
-    w.jobs[7] = {"name": "guardrail eval guardrail_eval", "tasks": []}  # from an earlier `bundle deploy`, untagged
-    out = job.deploy(w, json.loads(notebook_bundle.read_text()), notebook_bundle.parent)
-    assert out["action"] == "created" and out["job_id"] != 7 and w.jobs[7] == {"name": "guardrail eval guardrail_eval",
-                                                                               "tasks": []}
+    w = FakeJobsWorkspace(ME)
+    w.jobs[7] = {"name": "guardrail-eval", "tasks": []}  # from an earlier `bundle deploy`, untagged
+    out = job.deploy(w, bundle_dir(notebook_bundle))
+    assert out["jobs"]["guardrail_eval"]["job_id"] != 7 and w.jobs[7] == {"name": "guardrail-eval", "tasks": []}
     assert out["warnings"] == [
-        "1 other job(s) are also named 'guardrail eval guardrail_eval': this deploy left them alone"]
+        "1 other job(s) are also named 'guardrail-eval': this deploy left them alone"]
 
 
 def test_run_needs_the_latest_deploy_and_passes_only_and_params(notebook_bundle: Path):
-    w = FakeWorkspace()
-    state, workdir = json.loads(notebook_bundle.read_text()), notebook_bundle.parent
+    w = FakeJobsWorkspace(ME)
+    folder = bundle_dir(notebook_bundle)
     with pytest.raises(SystemExit, match="deploy first"):
-        job.start(w, state, workdir, "load_prompts", "")
-    job.deploy(w, state, workdir)
-    job.start(w, state, workdir, "run_eval", "mode=full, run_id=eval-full-202611120900")
-    assert w.started[-1] == {"job_id": 101, "job_parameters": {"mode": "full", "run_id": "eval-full-202611120900"},
+        job.start(w, folder, "", "load_prompts", "")
+    job_id = job.deploy(w, folder)["jobs"]["guardrail_eval"]["job_id"]
+    job.start(w, folder, "", "run_eval", "mode=full, run_id=eval-full-202611120900")
+    assert w.started[-1] == {"job_id": job_id, "job_parameters": {"mode": "full", "run_id": "eval-full-202611120900"},
                              "only": ["run_eval"]}
-    job.start(w, state, workdir, "", "")
-    assert w.started[-1] == {"job_id": 101}
+    job.start(w, folder, "guardrail_eval", "", "")
+    assert w.started[-1] == {"job_id": job_id}
 
-    notebook = workdir / "guardrail-eval" / "src" / "run_eval.py"
+    notebook = folder / "src" / "run_eval.py"
     notebook.write_text(notebook.read_text() + "\nprint('edited in the workspace')\n")
     with pytest.raises(SystemExit, match="The bundle changed since the last deploy"):
-        job.start(w, state, workdir, "run_eval", "mode=sample")
-    job.deploy(w, state, workdir)
-    job.start(w, state, workdir, "run_eval", "mode=sample")
-    assert "edited in the workspace" in base64_text(w.files[f"{FILE_PATH}/src/run_eval"]["content"])
+        job.start(w, folder, "", "run_eval", "mode=sample")
+    job.deploy(w, folder)
+    job.start(w, folder, "", "run_eval", "mode=sample")
+    assert "edited in the workspace" in w.file_text(f"{FILE_PATH}/src/run_eval")
 
 
-@pytest.mark.parametrize("only, params, message", [
-    ("chunk", "", "--only: ['chunk'] aren't tasks of the job"),
-    ("", "mode", "name=value pairs"),
-    ("", "mode=full,limit=5", "--params: ['limit'] aren't parameters of the job"),
+@pytest.mark.parametrize("job_key, only, params, message", [
+    ("", "chunk", "", "--only: ['chunk'] aren't tasks of the job"),
+    ("", "", "mode", "name=value pairs"),
+    ("", "", "mode=full,limit=5", "--params: ['limit'] aren't parameters of the job"),
+    ("review_sync", "", "", "--job 'review_sync' isn't in the bundle"),
 ])
-def test_run_checks_its_tasks_and_parameters(notebook_bundle: Path, only, params, message):
-    w = FakeWorkspace()
-    state, workdir = json.loads(notebook_bundle.read_text()), notebook_bundle.parent
-    job.deploy(w, state, workdir)
+def test_run_checks_its_job_tasks_and_parameters(notebook_bundle: Path, job_key, only, params, message):
+    w = FakeJobsWorkspace(ME)
+    job.deploy(w, bundle_dir(notebook_bundle))
     with pytest.raises(SystemExit, match=re.escape(message)):
-        job.start(w, state, workdir, only, params)
+        job.start(w, bundle_dir(notebook_bundle), job_key, only, params)
 
 
 def test_status_reads_each_tasks_summary_and_wait_stops_at_the_end():
-    w = FakeWorkspace()
+    w = FakeJobsWorkspace(ME)
     summary = {"table": "main.guardrail_eval.guardrail_eval_prompts", "prompts": 6886, "block": 1384, "allow": 5502}
     w.runs[5] = {"run_page_url": "https://example/run/5",
                  "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},

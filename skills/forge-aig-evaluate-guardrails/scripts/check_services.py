@@ -9,7 +9,7 @@
 
 forge-aig-create-model-service creates the services, from the entries the evaluation asked for in its
 model-services.yaml and service-policies.yaml. The services, and the policies each must have, come from
-<workdir>/<name>/src/eval_config.json, which render.py writes from those files (module 01). For each service, this
+<workdir>/<job_name>/src/eval_config.json, which render.py writes from those files (module 01). For each service, this
 reads the service, its policies, and who holds privileges on it, and reports a problem when:
 - the service doesn't exist, or its live policies aren't the ones model-services.yaml lists for it;
 - a policy doesn't block: it only logs (dry_run), or redacts (action transform), so the reply can't show its verdict;
@@ -89,10 +89,10 @@ def load(path: Path) -> tuple[dict, list[dict]]:
     if not path.is_file():
         raise SystemExit(f"{path} not found. Module 00 writes it; run preflight first.")
     state = json.loads(path.read_text())
-    if errors := runtime_errors(state) + [f"{key} is missing or empty" for key in ("name", "model_services")
+    if errors := runtime_errors(state) + [f"{key} is missing or empty" for key in ("job_name", "model_services")
                                           if not state.get(key)]:
         raise SystemExit(f"{path}: " + "; ".join(errors) + " (module 00 records them)")
-    config_path = path.resolve().parent / state["name"] / "src" / "eval_config.json"
+    config_path = path.resolve().parent / state["job_name"] / "src" / "eval_config.json"
     if not config_path.is_file():
         raise SystemExit(f"{config_path} not found: render.py writes it (module 01, step 1)")
     services = json.loads(config_path.read_text()).get("services") or []

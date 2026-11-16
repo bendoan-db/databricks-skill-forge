@@ -20,16 +20,16 @@ Second task of the evaluation job, after load_prompts.py. It's a Databricks note
 task whose parameters arrive as widgets, or locally through Databricks Connect, with the same settings as flags:
 
     uv run --with "databricks-connect>=17" --with "mlflow-skinny>=3" python run_eval.py --catalog main \
-        --schema guardrail_eval --prefix guardrail_eval --config eval_config.json --mode sample
+        --schema guardrail_eval --table-prefix guardrail_eval --config eval_config.json --mode sample
 
-The config's `services` are the model services under evaluation, which forge-aig-create-model-service created, each
-with the policies it must have. Before sending anything it checks that each service has exactly those policies, and
-waits until settle_minutes have passed since any of them last changed (policy changes take a few minutes to take
-effect). A run sends the same prompts to every service: `sample_size` per dataset and label (mode `sample`) or all of
-them (`full`), with `concurrency` calls in flight in all, and appends one row per prompt and service to
-<prefix>_results in batches. A run is resumable: give its run_id again, and only what it hasn't sent is sent. It then
-replaces the run's rows in <prefix>_metrics, scored per service so the services compare side by side, and logs one
-MLflow run per service, tagged with the run's id.
+The config's `services` are the model services under evaluation, which forge-aig-create-model-service created, each with
+the policies it must have. Before sending anything it checks that each service has exactly those policies, and waits
+until settle_minutes have passed since any of them last changed (policy changes take a few minutes to take effect). A
+run sends the same prompts to every service: `sample_size` per dataset and label (mode `sample`) or all of them
+(`full`), with `concurrency` calls in flight in all, and appends one row per prompt and service to
+<table_prefix>_results in batches. A run is resumable: give its run_id again, and only what it hasn't sent is sent. It
+then replaces the run's rows in <table_prefix>_metrics, scored per service so the services compare side by side, and
+logs one MLflow run per service, tagged with the run's id.
 
 A blocked prompt is a positive. A guardrail that fails to evaluate denies the request (the gateway fails closed), so
 that counts as a block by that guardrail; a rate-limited call is retried instead, and a call that still fails is an
@@ -85,7 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])  # a notebook has no __doc__
     p.add_argument("--catalog", required=True)
     p.add_argument("--schema", required=True)
-    p.add_argument("--prefix", required=True, help="Table prefix: reads <prefix>_prompts, writes _results and _metrics")
+    p.add_argument("--table-prefix", required=True,
+                   help="Table prefix: reads <table_prefix>_prompts, writes _results and _metrics")
     p.add_argument("--config", default="", help="eval_config.json, which render.py writes (default: next to this file)")
     p.add_argument("--mode", choices=MODES, default="sample",
                    help="sample: sample_size prompts per dataset and label; full: every prompt")
@@ -485,10 +486,10 @@ def main(argv: list[str] | None = None) -> None:
     for name in (args.catalog, args.schema):
         if not NAME_RE.match(name):
             raise SystemExit(f"Invalid name {name!r}: use letters, digits, '_' or '-'")
-    if not PREFIX_RE.match(args.prefix):
-        raise SystemExit(f"Invalid prefix {args.prefix!r}: use lowercase letters, digits, and '_'")
+    if not PREFIX_RE.match(args.table_prefix):
+        raise SystemExit(f"Invalid table_prefix {args.table_prefix!r}: use lowercase letters, digits, and '_'")
     config = load_config(Path(args.config) if args.config else script_dir() / "eval_config.json")
-    table = lambda suffix: f"`{args.catalog}`.`{args.schema}`.`{args.prefix}_{suffix}`"  # noqa: E731
+    table = lambda suffix: f"`{args.catalog}`.`{args.schema}`.`{args.table_prefix}_{suffix}`"  # noqa: E731
     prompts_table, results, metrics = table("prompts"), table("results"), table("metrics")
     services = [s["name"] for s in config["services"]]
 

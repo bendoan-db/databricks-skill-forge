@@ -6,7 +6,7 @@ Check the model services under evaluation before the job sends them anything: ea
 
 ## Inputs → outputs
 
-- **Inputs:** `model_services` from `guardrail-eval.json`, and `<workdir>/<name>/src/eval_config.json` from module 01, which lists each service's policies as `forge-aig-create-model-service`'s `model-services.yaml` does.
+- **Inputs:** `model_services` from `guardrail-eval.json`, and `<workdir>/<job_name>/src/eval_config.json` from module 01, which lists each service's policies as `forge-aig-create-model-service`'s `model-services.yaml` does.
 - **Outputs:** every model service checked and probed, with nothing left to fix. This module changes nothing.
 
 ## The guardrails
@@ -16,8 +16,8 @@ The evaluation's own definitions of the built-ins, from module 00, step 7:
 | Policy | Type (`service-policies.yaml`) | Built-in | Checks | Evaluator |
 |---|---|---|---|---|
 | `eval_sensitive_data` | `detect_sensitive_data` | `system.ai.detect_sensitive_data` | requests and responses, for 15 kinds of personal data (email and IP addresses, card, bank, and IBAN numbers, US SSN, ITIN, and passport, phone numbers, and UK and Indian IDs), by pattern and checksum | none |
-| `eval_unsafe_content` | `block_unsafe_content` | `system.ai.block_unsafe_content` | requests and responses, for unsafe or harmful content | `evaluators.unsafe_content` |
-| `eval_jailbreak` | `block_jailbreak` | `system.ai.block_jailbreak` | requests, for jailbreaks and prompt injection | `evaluators.jailbreak` |
+| `eval_unsafe_content` | `block_unsafe_content` | `system.ai.block_unsafe_content` | requests and responses, for unsafe or harmful content | its own, `system.ai.gemma-3-12b` by default |
+| `eval_jailbreak` | `block_jailbreak` | `system.ai.block_jailbreak` | requests, for jailbreaks and prompt injection | `default_evaluator_model` |
 
 Custom policies are evaluated the same way: an `llm_judge` runs `system.ai.invoke_llm_judge` on its evaluator with the user's instruction, and a `sql` policy is a Unity Catalog function in the services' schema. A request goes through a service's policies in rank order, and the first that denies it blocks it, so a later policy only sees what earlier ones allowed. The evaluation reads each verdict from the blocked response, which is why every policy must block: one that only logs, or redacts, leaves no verdict to read. The LLM-judge policies look at the last 10 turns, which for a one-prompt request is the prompt.
 

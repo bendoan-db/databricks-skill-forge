@@ -17,13 +17,13 @@ This is a use-case skill. It doesn't restate platform details: each module step 
 
 ```
 forge-aig-create-model-service (run first; writes aig-model-services.json and <config_dir>/*.yaml)
-  └─► model services <prefix>_..., each with the policies under evaluation; no grants, no inference table (00)
-Aegis 2.0 + ToxicChat (pinned)  ─┐    Lakeflow job <name> (DAB; in a notebook, job.py deploys it), notebook tasks
-or the user's table / file      ─┴─►  load_prompts.py ──► <prefix>_prompts   one row per prompt, BLOCK or ALLOW (01)
+  └─► model services <table_prefix>_..., each with the policies under evaluation; no grants, no inference table (00)
+Aegis 2.0 + ToxicChat (pinned)  ─┐    Lakeflow job <job_name> (DAB; in a notebook, job.py deploys it), notebook tasks
+or the user's table / file      ─┴─►  load_prompts.py ──► <table_prefix>_prompts   one row per prompt, BLOCK or ALLOW (01)
 render.py ◄── model-services.yaml, service-policies.yaml: the services, and the policies each must have (01)
 check_services.py ──► each service: exactly its policies, all blocking, nobody else's; a pass and a block (02)
 run_eval.py: each prompt, to each service ──► /ai-gateway/mlflow/v1/chat/completions ──► blocked, and by which policy
-             ──► <prefix>_results ──► <prefix>_metrics, per service; an MLflow run per service (03)
+             ──► <table_prefix>_results ──► <table_prefix>_metrics, per service; an MLflow run per service (03)
 evaluate.py ──► the report: the services compared; recall, precision, false-positive rate, F1, latency; the gate (03)
 ```
 
@@ -31,8 +31,8 @@ evaluate.py ──► the report: the services compared; recall, precision, fals
 
 - `<skill>` is the folder that holds this SKILL.md. The base skills are its siblings, for example `<skill>/../databricks-core`, and so is `forge-aig-create-model-service`.
 - This is a Forge use case. The `forge` skill (`<skill>/../forge`) usually starts it and passes along what the user already said. Loaded directly, it runs the same way.
-- `<workdir>` is where `guardrail-eval.json`, the model services' `aig-model-services.json` and YAML files, and the `<name>/` bundle live. Default: the current directory; in Genie Code, the folder of the notebook it's open in.
-- `<workdir>/guardrail-eval.json` holds every resolved value. Module 00 creates it, each module reads it first, and you record what a module adds before you move on. In commands, `<key>` means the value of `key` in that file, for example `<profile>` or `<prefix>`.
+- `<workdir>` is where `guardrail-eval.json`, the model services' `aig-model-services.json` and YAML files, and the `<job_name>/` bundle live. Default: the current directory; in Genie Code, the folder of the notebook it's open in.
+- `<workdir>/guardrail-eval.json` holds every resolved value. Module 00 creates it, each module reads it first, and you record what a module adds before you move on. In commands, `<key>` means the value of `key` in that file, for example `<profile>` or `<table_prefix>`.
 - `runtime`, in that file, is where the skill runs, recorded once in module 00 and passed to `forge-aig-create-model-service`, which records the same: `local`, a coding assistant on the user's computer, using the CLI profile; or `workspace`, Genie Code in a notebook, signed in as the notebook's user. The commands in the modules are the local ones. With `workspace`, run each one's equivalent from [In a notebook](#in-a-notebook).
 - `<workdir>/aig-model-services.json` and the YAML files in its `<config_dir>/` belong to `forge-aig-create-model-service`: read them, but never write them. The services under evaluation, and their policies, are what those files say. To change one, run that skill (module 00, step 7).
 - A **Load:** line names a base skill, and usually one reference file in it, to read at that step. Don't load base skills up front, and read only the file named.
@@ -96,15 +96,14 @@ Collect these together in one question during module 00. `target_schema` is requ
 |---|---|---|
 | `target_schema` | — (required) | `<catalog>.<schema>` for the tables and the dataset volume, and for the model services when `<workdir>` has none yet |
 | `dataset` | — (asked) | The user's labeled prompts: a table, or a CSV, JSON, JSON Lines, or Parquet file in a volume, with a prompt column and a label column. Without one: Aegis 2.0 and ToxicChat (module 00 states their licenses) |
-| `services` | the built-ins together | What to evaluate: the evaluation's model services, each named `<prefix>_...`, and the policies each carries (module 00, step 1). Several compare side by side |
+| `services` | the built-ins together | What to evaluate: the evaluation's model services, each named `<table_prefix>_...`, and the policies each carries (module 00, step 1). Several compare side by side |
 | `profile` | from `databricks-core` | CLI profile for every command. Locally only: in a notebook, the notebook's user |
-| `name` | `guardrail-eval` | Lowercase letters, digits, hyphens, ≤40 chars; the bundle and the job |
-| `prefix` | `guardrail_eval` | Table prefix, and the start of every evaluation service's name, such as `<prefix>_model` |
+| `job_name` | `guardrail-eval` | Lowercase letters, digits, hyphens, ≤40 chars; names the job and the bundle's folder |
+| `table_prefix` | `guardrail_eval` | Starts the name of every table, the dataset volume, and every evaluation service, such as `<table_prefix>_prompts` and `<table_prefix>_model` |
 | `base_model` | `system.ai.databricks-claude-sonnet-5-5` | The model the evaluation's services route to: a Unity Catalog model, not a model service. Only prompts the guardrails let through reach it |
-| `evaluators` | `system.ai.gemma-3-12b` (Unsafe Content), `system.ai.gpt-oss-20b` (Jailbreak) | The model services the built-in LLM-judge guardrails run on |
+| `default_evaluator_model` | `system.ai.gpt-oss-20b` | The model service that judges the LLM-based guardrails, Jailbreak and the user's LLM judges, unless one names its own. The built-in Unsafe Content guardrail names its own, `system.ai.gemma-3-12b` (module 00, step 7) |
 | `sample_size` | 100 | Prompts per dataset and label in a sample run |
 | `concurrency` | 8 | Gateway calls in flight, across all the services |
-| `targets` | none | Rates the user needs, such as `{"recall": 0.9, "fp_rate": 0.1}`; reported as met or missed for each service |
 
 ## Guardrails
 
@@ -121,16 +120,16 @@ Collect these together in one question during module 00. `target_schema` is requ
 Run the modules in order. Each one ends with a **Verify** step that must pass before you move on. Track progress with this checklist, and add each module's id to `completed` in `guardrail-eval.json` when its Verify passes:
 
 - [ ] 00 Preflight: inputs, the dataset, and what to evaluate resolved, base skills present, the Beta enabled, cost and licenses approved, `guardrail-eval.json` written, and the model services created by `forge-aig-create-model-service`
-- [ ] 01 Dataset: the bundle rendered with the services and their policies, and `<prefix>_prompts` loaded, with BLOCK and ALLOW counts reported
+- [ ] 01 Dataset: the bundle rendered with the services and their policies, and `<table_prefix>_prompts` loaded, with BLOCK and ALLOW counts reported
 - [ ] 02 Guardrails: every service has exactly its policies, all blocking, nobody else uses it, and its probes pass
 - [ ] 03 Evaluate: a sample run, then a full run, with at least 98% of prompts scored for every service, and the report given
 
 | # | Module | Produces | Base skills used |
 |---|---|---|---|
 | 00 | [Preflight](modules/00-preflight.md) | `guardrail-eval.json`, cost and license go-ahead, the model services (through `forge-aig-create-model-service`) | databricks-core, databricks-unity-catalog |
-| 01 | [Dataset](modules/01-dataset.md) | `<name>/` bundle, `<prefix>_prompts` | databricks-unity-catalog, databricks-dabs |
+| 01 | [Dataset](modules/01-dataset.md) | `<job_name>/` bundle, `<table_prefix>_prompts` | databricks-unity-catalog, databricks-dabs |
 | 02 | [Guardrails](modules/02-guardrails.md) | each model service checked, and probed with a pass and a block | databricks-unity-gateway |
-| 03 | [Evaluate](modules/03-evaluate.md) | `<prefix>_results`, `<prefix>_metrics`, an MLflow run per service, the report | databricks-dabs |
+| 03 | [Evaluate](modules/03-evaluate.md) | `<table_prefix>_results`, `<table_prefix>_metrics`, an MLflow run per service, the report | databricks-dabs |
 
 The working directory ends up with both skills' state files, the model services' YAML files, and the bundle:
 
@@ -140,7 +139,7 @@ The working directory ends up with both skills' state files, the model services'
 ├── guardrail-eval.json      # resolved values; render.py and the scripts read it
 ├── aig-model-services.json  # the model services' settings (forge-aig-create-model-service); read-only here
 ├── <config_dir>/            # its YAML files: the services under evaluation and their policies; read-only here
-└── <name>/                  # Declarative Automation Bundle: load_prompts → run_eval job, rendered by render.py; the user can edit it
+└── <job_name>/                  # Declarative Automation Bundle: load_prompts → run_eval job, rendered by render.py; the user can edit it
 ```
 
 **The README.** Each time a module's Verify passes, module 00's included, update `<workdir>/README.md`:
@@ -166,7 +165,7 @@ It explains the project to whoever opens the folder, from this skill and every F
 |---|---|---|
 | What to evaluate | The built-ins together, on one service | The user wants each guardrail's own recall: policies stop at the first block, so on one service a later guardrail only sees what earlier ones let through. Put each on its own service, compared in one run. A production service's guardrails: a copy of it. A custom rule: alone, or next to the built-in it would replace |
 | Dataset | Asked in module 00 | The user has labeled prompts from their own application: evaluate those. Otherwise Aegis 2.0 (12 harm categories) and ToxicChat (real user prompts, toxicity and jailbreaks) |
-| Evaluator models | `gemma-3-12b`, `gpt-oss-20b` | The policy form's preselected evaluator differs in this workspace (Advanced options), or many fail-closed blocks show an evaluator refusing. Then set `evaluators`, or compare two on two services |
+| Evaluator models | `default_evaluator_model` (`gpt-oss-20b`), and `gemma-3-12b` for Unsafe Content | The policy form's preselected evaluator differs in this workspace (Advanced options), or many fail-closed blocks show an evaluator refusing. Then set `default_evaluator_model`, or the `evaluator` on one guardrail's entry, or compare two on two services |
 | Sample or full run | Sample first, then full | Never skip the sample: it shows rate limits and fail-closed blocks before a long run |
 | Concurrency | 8 | Errors or fail-closed blocks rise with rate limits: lower it. It's the calls in flight across every service, so several services take longer, not harder |
 | Policies that only log or redact | Not evaluated | A policy in `mode: log`, or a Sensitive Data Detection policy that redacts, leaves no verdict in the reply. Leave it out of the copy, and tell the user it isn't measured |
@@ -174,9 +173,9 @@ It explains the project to whoever opens the folder, from this skill and every F
 
 ## Done when
 
-- `<prefix>_prompts` holds the dataset, and you reported its prompts by dataset and label, and what was dropped.
+- `<table_prefix>_prompts` holds the dataset, and you reported its prompts by dataset and label, and what was dropped.
 - Every service in `<model_services>` has exactly the policies its entry in `model-services.yaml` lists, all blocking, nobody else holds a privilege on it, and `check_services.py --probe` passes.
-- A full run scored at least 98% of its prompts for every service (`scored_rate`; `evaluate.py` exits 0), and you reported, for each service, recall, precision, false-positive rate, and F1 overall and per dataset, each guardrail's blocks and false positives, the categories with the lowest recall, latency, and each target met or missed, and, with several services, how they compare. Report the MLflow runs.
+- A full run scored at least 98% of its prompts for every service (`scored_rate`; `evaluate.py` exits 0), and you reported, for each service, recall, precision, false-positive rate, and F1 overall and per dataset, each guardrail's blocks and false positives, the categories with the lowest recall, and latency, and, with several services, how they compare. Report the MLflow runs.
 - `<workdir>/README.md` describes the finished project: `write_readme.py` ran after the last module.
 - You told the user the model services, the tables, the job and how to run it again, and how to delete them (each after a confirmation naming it). If `forge` started this skill, return to it for a next step.
 

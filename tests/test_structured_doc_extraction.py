@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from conftest import SKILLS_DIR, load_script, run_script
+from conftest import SKILLS_DIR, FakeJobsWorkspace, load_script, run_script
 
 SKILL = "forge-structured-doc-extraction"
 SCRIPTS = SKILLS_DIR / SKILL / "scripts"
@@ -553,3 +553,135 @@ def test_render_keeps_edited_copies_of_the_job_files(tmp_path: Path):
 
     summary = json.loads(render("--state", str(state), "--force").stdout)
     assert summary["kept_edited"] == [] and "edited in the workspace" not in notebook.read_text()
+
+
+# --- in a notebook (runtime workspace) --------------------------------------------------------------------
+
+job = load_script(SKILL, "job")
+NOTEBOOK = {"runtime": "workspace", "profile": None}
+ME = "someone@example.com"
+LAKEBASE = {"project": "projects/loan-docs-review", "branch": "projects/loan-docs-review/branches/production",
+            "database": "projects/loan-docs-review/branches/production/databases/databricks-postgres"}
+SCAFFOLD = yaml.safe_load((APP / "scaffold.yaml").read_text())
+FILL_RE = re.compile(r"\{\{([a-z_]+)\}\}")
+
+
+def test_render_in_a_notebook_leaves_the_profile_out(tmp_path: Path):
+    render("--state", str(write_state(tmp_path, **NOTEBOOK)))
+    text = (tmp_path / "loan-docs-extract" / "databricks.yml").read_text()
+    assert yaml.safe_load(text)["targets"]["default"] == {"default": True} and "# >>>" not in text
+    render("--state", str(write_state(tmp_path)))
+    local = yaml.safe_load((tmp_path / "loan-docs-extract" / "databricks.yml").read_text())
+    assert local["targets"]["default"]["workspace"] == {"profile": "DEFAULT"}
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"profile": None}, "profile is missing or empty: locally"),
+    ({"runtime": "cloud"}, "runtime='cloud'"),
+])
+def test_render_checks_the_runtime(tmp_path: Path, change, message):
+    result = render("--state", str(write_state(tmp_path, **change)), check=False)
+    assert result.returncode == 1 and message in result.stderr
+
+
+def test_render_writes_the_review_app_in_a_notebook(tmp_path: Path):
+    review = {**REVIEW, "review": {**REVIEW["review"], **LAKEBASE}}
+    state = write_state(tmp_path, **NOTEBOOK, **review)
+    summary = json.loads(render("--state", str(state)).stdout)
+    app = tmp_path / "loan-docs-review"
+    assert summary["review"]["app"] == str(app)
+    written = {Path(p).relative_to(app).as_posix() for p in summary["written"] if Path(p).is_relative_to(app)}
+    assert written == set(SCAFFOLD["files"]) | {"server/server.ts", "server/review-routes.ts", "client/src/App.tsx",
+                                                "README.md"}
+    for path in written:
+        assert not FILL_RE.search((app / path).read_text()), f"{path} has a placeholder left"
+    package = json.loads((app / "package.json").read_text())
+    assert package["name"] == "loan-docs-review" and package["dependencies"]["@databricks/appkit"] == "0.84.0"
+    env = {e["name"]: e for e in yaml.safe_load((app / "app.yaml").read_text())["env"]}
+    assert env["LAKEBASE_ENDPOINT"] == {"name": "LAKEBASE_ENDPOINT", "valueFrom": "postgres"}
+    assert env["DATABRICKS_VOLUME_FILES"] == {"name": "DATABRICKS_VOLUME_FILES", "valueFrom": "files"}
+    assert env["REVIEW_QUEUE_TABLE"]["value"] == "loans.loan_docs_review_queue"
+    bundle = yaml.safe_load((app / "databricks.yml").read_text())
+    assert bundle["resources"]["apps"]["app"]["name"] == "loan-docs-review"
+    assert bundle["targets"]["default"] == {"default": True, "variables": {
+        "files_path": "main.loans.packets", "postgres_branch": LAKEBASE["branch"],
+        "postgres_database": LAKEBASE["database"]}}
+    assert {r["name"] for r in bundle["resources"]["apps"]["app"]["resources"]} == {"files", "postgres"}
+    assert (APP / "server.ts").read_text() in (app / "server" / "server.ts").read_text()
+    readme = (app / "README.md").read_text()
+    assert readme.startswith("<!-- Rendered by forge-structured-doc-extraction render.py")
+    assert str(app) in readme and LAKEBASE["database"] in readme and "`main.loans.packets`" in readme
+
+    (app / "package.json").write_text((app / "package.json").read_text().replace('"1.0.0"', '"1.0.1"'))
+    again = json.loads(render("--state", str(state)).stdout)
+    assert str(app / "package.json") in again["kept_edited"] and '"1.0.1"' in (app / "package.json").read_text()
+    assert str(app / "README.md") in again["unchanged"]
+    (app / "README.md").write_text(readme + "A note.\n")
+    assert render("--state", str(state), check=False).returncode == 1  # edited by hand: kept unless --force
+    render("--state", str(state), "--force")
+    assert (app / "README.md").read_text() == readme
+
+
+def test_render_in_a_notebook_waits_for_the_lakebase_names(tmp_path: Path):
+    state = write_state(tmp_path, **NOTEBOOK, review_app=True, review={"app_name": "loan-docs-review"})
+    summary = json.loads(render("--state", str(state)).stdout)
+    assert summary["review"]["app"].startswith("not generated yet") and "review.branch" in summary["review"]["app"]
+    assert not (tmp_path / "loan-docs-review").exists()
+
+
+def test_the_notebook_scaffold_builds_with_npm_at_the_reviewed_appkit_version():
+    """scaffold.yaml is what tools/vendor_review_app_scaffold.py writes: text, npm (Apps runs npm install without a
+    pnpm lockfile), the AppKit version the review files were written against, and none of the files render.py copies
+    from scripts/review-app."""
+    files = SCAFFOLD["files"]
+    package = json.loads(files["package.json"].replace("{{app_name}}", "x"))
+    assert SCAFFOLD["appkit_version"] == package["dependencies"]["@databricks/appkit"] == "0.84.0"
+    assert package["dependencies"]["@databricks/appkit-ui"] == "0.84.0" and "packageManager" not in package
+    assert "pnpm" not in json.dumps(package["scripts"]) and package["scripts"]["build"]
+    assert yaml.safe_load(files["app.yaml"])["command"] == ["npm", "run", "start"]
+    assert not set(files) & {"server/server.ts", "server/review-routes.ts", "client/src/App.tsx", "README.md"}
+    assert all(not path.startswith("/") and ".." not in path.split("/") for path in files)
+    used = {m for text in files.values() for m in FILL_RE.findall(text)}
+    assert used == {"app_name", "volume", "branch", "database"}
+    render_module = load_script(SKILL, "render")
+    values = render_module.app_values({**STATE, **REVIEW, "review": {**REVIEW["review"], **LAKEBASE}}, Path("/w/app"))
+    assert set(FILL_RE.findall((APP / "deploy.md").read_text())) <= set(values)
+    assert f"written against {SCAFFOLD['appkit_version']}" in (SKILLS_DIR / SKILL / "ucs.yaml").read_text()
+
+
+def test_job_py_deploys_the_extraction_bundle(tmp_path: Path):
+    review = {**REVIEW, "review": {**REVIEW["review"], "history_ready": True}}
+    state = write_state(tmp_path, **NOTEBOOK, **review, localize=True, page_images_path="/Volumes/main/loans/img",
+                        ocr_cluster={"spark_version": "17.3.x-scala2.13", "node_type_id": "i3.xlarge"})
+    render("--state", str(state))
+    folder, w = tmp_path / "loan-docs-extract", FakeJobsWorkspace(ME)
+    file_path = f"/Workspace/Users/{ME}/.bundle/loan-docs-extract/default/files"
+    out = job.deploy(w, folder)
+    assert set(out["jobs"]) == {"doc_extraction", "review_sync"} and out["file_path"] == file_path
+    formats = {path.removeprefix(file_path + "/src/"): body["format"] for path, body in w.files.items()}
+    assert formats == {"parse": "SOURCE", "extract": "SOURCE", "localize": "SOURCE", "parse.sql": "AUTO",
+                       "extract.sql": "AUTO", "localize.sql": "AUTO", "install_tesseract.sh": "AUTO",
+                       "extraction_config.json": "AUTO"}
+    extraction = w.jobs[out["jobs"]["doc_extraction"]["job_id"]]
+    cluster = extraction["job_clusters"][0]["new_cluster"]
+    assert cluster["single_user_name"] == ME
+    assert cluster["init_scripts"] == [{"workspace": {"destination": f"{file_path}/src/install_tesseract.sh"}}]
+    assert extraction["trigger"]["file_arrival"]["url"] == "/Volumes/main/loans/packets/"
+    tasks = {t["task_key"]: t for t in extraction["tasks"]}
+    assert tasks["localize"]["notebook_task"]["notebook_path"] == f"{file_path}/src/localize"
+    assert tasks["review_queue"]["pipeline_task"] == {"pipeline_id": REVIEW["review"]["sync_pipeline_id"]}
+    sync = w.jobs[out["jobs"]["review_sync"]["job_id"]]
+    assert sync["trigger"]["table_update"]["table_names"] == ["main.loans.lb_loan_docs_decisions_history"]
+    assert sync["tags"] == {"forge_bundle": "loan-docs-extract", "forge_job": "review_sync",
+                            "forge_digest": sync["tags"]["forge_digest"]}
+    assert "${" not in json.dumps(list(w.jobs.values()))
+
+    with pytest.raises(SystemExit, match="name one"):
+        job.start(w, folder, "", "parse", "")
+    job.start(w, folder, "doc_extraction", "parse", "")
+    assert w.started[-1] == {"job_id": out["jobs"]["doc_extraction"]["job_id"], "only": ["parse"]}
+    job.start(w, folder, "review_sync", "", "")
+    assert w.started[-1] == {"job_id": out["jobs"]["review_sync"]["job_id"]}
+    again = job.deploy(w, folder)["jobs"]
+    assert {k: v["action"] for k, v in again.items()} == {"doc_extraction": "updated", "review_sync": "updated"}
+
