@@ -3,7 +3,7 @@ name: forge-doc-qa-agent
 description: "Forge use case, normally started by the forge skill: builds and deploys a cited document Q&A (RAG) agent over the documents in a Unity Catalog volume, as a LangGraph agent on Databricks Apps (Agent Runtime) that runs hybrid searches with metadata filters on an AI Search index and cites [file_name, p. N], with managed sessions and MLflow evaluation. Runs forge-unstructured-doc-extraction first when the documents aren't indexed yet. Use when forge hands off to it, or when the user names this skill."
 compatibility: Requires databricks CLI (>= v1.11.0), Python 3.11+, uv, databricks-agentbricks (>= 0.5.0, < 0.6), the forge-unstructured-doc-extraction use-case skill, and the databricks-agent-skills base skills (>= v0.2.27), all installed in the same skills directory as this skill
 metadata:
-  version: "0.4.0"
+  version: "0.4.1"
   forge_kind: use-case
 ---
 

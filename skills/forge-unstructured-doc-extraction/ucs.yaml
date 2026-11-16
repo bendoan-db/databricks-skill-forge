@@ -81,7 +81,7 @@ modules:
         version: 0.1.0
         uses: [query_index hybrid search, filters_json, troubleshooting]
       - name: databricks-mlflow-evaluation
-        version: 0.1.0
+        version: 0.1.0  # Load lines name no file: 0.2.0 (v0.2.39) moved its guides, and the CLI still installs older releases
         uses: [eval dataset formats, experiment logging]
     external:
       - name: databricks-agents

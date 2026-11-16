@@ -44,11 +44,13 @@ The Knowledge Assistant deprecation is left out, because there's no public notic
 
 ## 4. Cover synthetic evaluation sets
 
-**Problem or opportunity.** No base skill mentions `generate_evals_df`. `databricks-mlflow-evaluation/references/patterns-datasets.md` builds datasets by hand or from traces, so agents without labeled questions skip retrieval and answer evaluation, or write their own question generators.
+**Status (2026-11-16): partly covered upstream.** Since v0.2.39, `databricks-mlflow-evaluation`'s `references/mlflow-evaluation/references/dataset-preparation.md` says to use `databricks.agents.evals.generate_evals_df` on Databricks when a synthesized set is requested. It doesn't describe its output's `expected_retrieved_context`, or scoring retrieval with it, which is what's left of this proposal.
+
+**Problem or opportunity.** Until v0.2.38, no base skill mentioned `generate_evals_df`: `references/patterns-datasets.md` built datasets by hand or from traces, so agents without labeled questions skipped retrieval and answer evaluation, or wrote their own question generators.
 
 **Proposed change.** Add a pattern for `databricks.agents.evals.generate_evals_df`: its input (`content`, `doc_uri`), its MLflow 3 output (`inputs`, `expectations.expected_facts`, `expectations.expected_retrieved_context`), and how to use `expected_retrieved_context` to score retrieval as well as answers.
 
-**Affected skill or area.** `databricks-mlflow-evaluation` (`references/patterns-datasets.md`).
+**Affected skill or area.** `databricks-mlflow-evaluation` (`references/mlflow-evaluation/references/dataset-preparation.md`; before v0.2.39, `references/patterns-datasets.md`).
 
 **Additional context.** [Synthesize evaluation sets](https://docs.databricks.com/aws/en/generative-ai/agent-evaluation/synthesize-evaluation-set) (updated 2026-09-11).
 

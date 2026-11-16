@@ -9,7 +9,7 @@ Measure how often a search returns the document and page that answer a question,
 
 ## 1. Eval set
 
-- **The user has questions with known sources:** convert them to JSON Lines, one line per question: `{"question": ..., "file_name": ..., "pages": [N]}`. `file_name` is the file's name without its path, and `pages` (1-based) is optional. Keep any `expected_response` or `expected_facts`: `forge-doc-qa-agent` grades answers with them. If the conversion isn't straightforward, **load** `databricks-mlflow-evaluation` `references/patterns-datasets.md`.
+- **The user has questions with known sources:** convert them to JSON Lines, one line per question: `{"question": ..., "file_name": ..., "pages": [N]}`. `file_name` is the file's name without its path, and `pages` (1-based) is optional. Keep any `expected_response` or `expected_facts`: `forge-doc-qa-agent` grades answers with them. If the conversion isn't straightforward, **load** `databricks-mlflow-evaluation` (evaluation dataset formats).
 - **No eval set:** synthesize one (step 2, `--synthesize 30`). `evaluate.py` samples chunks, writes a question and expected facts from each with `generate_evals_df`, and labels each question with its chunk's file and pages. Tell the user that synthetic questions are a starting point: each comes from a single passage, so they're easier than real questions. A domain expert should review and extend them.
 
 A row can carry `filters` (for example `{"fiscal_year": 2022}`) to test a filtered search. Rows without `file_name`, such as questions the corpus can't answer, are skipped here.

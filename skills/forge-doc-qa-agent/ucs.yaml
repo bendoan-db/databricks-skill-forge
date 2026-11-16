@@ -1,7 +1,7 @@
 # Source of truth for this use-case skill's dependency graph. Drift detection reads it, CI checks it against the module text,
 # and scripts/check_base_skills.py reads base_skills at runtime.
 name: forge-doc-qa-agent
-version: 0.4.0
+version: 0.4.1
 owner: "@databricks-field/genai-ucs"        # drift issues are assigned here
 dbs_release: dbs-2026.10                    # Forge base release; not published yet, so `upstream` is the working pin
 upstream: databricks/databricks-agent-skills@v0.2.29   # written and certified against this tag (2026-10-12)
@@ -75,7 +75,7 @@ modules:
     scripts: [scripts/evaluate.py]
     base_skills:
       - name: databricks-mlflow-evaluation
-        version: 0.1.0
+        version: 0.1.0  # Load lines name no file: 0.2.0 (v0.2.39) moved its guides, and the CLI still installs older releases
         uses: [mlflow.genai.evaluate, built-in scorers, Guidelines, local predict_fn, trace ingestion]
 
 # Capabilities this skill needs but the pinned base release doesn't cover, or covers with stale facts.

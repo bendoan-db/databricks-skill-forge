@@ -347,7 +347,9 @@ def test_steps_end_to_end(tmp_path: Path, monkeypatch):
     impacts = store.rows("ucs_impacts", run_id="t1")
     assert [(i["forge_skill"], i["kind"]) for i in impacts] == [("forge-doc-qa-agent", "cited_file_changed")]
     (proposal,) = store.rows("ucs_drift_proposals", run_id="t1")
-    assert (proposal["action"], proposal["valid"], proposal["new_version"]) == ("edit", True, "0.4.1")
+    major, minor, patch = yaml.safe_load(ucs.read_text())["version"].split(".")  # the answer's bump is "patch"
+    assert (proposal["action"], proposal["valid"], proposal["new_version"]) == ("edit", True,
+                                                                               f"{major}.{minor}.{int(patch) + 1}")
     folder = tmp_path / "state" / "runs" / "t1" / "forge-doc-qa-agent"
     assert (folder / "files" / module).read_text().splitlines()[0].endswith("(edited)")
     assert "@v2.0.0   # moved by forge_ucs_drift" in (folder / "files" / "skills/forge-doc-qa-agent/ucs.yaml").read_text()

@@ -31,7 +31,7 @@ Confidence tells you where the model was unsure, not whether it was right. Treat
 - **No labels:** offer to label 10–20 documents per type with the user. Start each record from the extracted values, and have the user correct them; don't let them copy values unread. Without labels, stop after step 1, and report that accuracy is unmeasured.
 - **Leave a field out when it isn't labeled. Set it to `null` when the document truly lacks it.** Only labeled fields are scored, so partial labels are fine.
 
-Record an MLflow experiment path as `experiment` in `extraction.json`, such as `/Users/<user>/<name>-extraction-eval`. If you change `evaluate.py`, **load** `databricks-mlflow-evaluation` `references/CRITICAL-interfaces.md` first (judges and logging).
+Record an MLflow experiment path as `experiment` in `extraction.json`, such as `/Users/<user>/<name>-extraction-eval`. If you change `evaluate.py`, **load** `databricks-mlflow-evaluation` first (judges and logging; the script calls `mlflow.genai.judges.is_correct`).
 
 ## 3. Run
 

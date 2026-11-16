@@ -87,7 +87,7 @@ modules:
     scripts: [scripts/confidence_profile.py, scripts/parse_quality.py, scripts/evaluate.py]
     base_skills:
       - name: databricks-mlflow-evaluation
-        version: 0.1.0
+        version: 0.1.0  # Load lines name no file: 0.2.0 (v0.2.39) moved its guides, and the CLI still installs older releases
         uses: [is_correct judge, experiment logging]
     external:
       - name: mlflow
